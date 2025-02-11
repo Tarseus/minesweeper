@@ -2,11 +2,10 @@ from env.minesweeper import MinesweeperEnv
 from src import *
 
 def main(solver_type='base'):
-    # 创建环境
-    if solver_type != 'logic':
-        env = MinesweeperEnv(width=8, height=8, num_mines=10, use_dfs=True)
-    else:
+    if solver_type == 'logic':
         env = MinesweeperEnv(width=8, height=8, num_mines=10, use_dfs=False)
+    else:
+        env = MinesweeperEnv(width=8, height=8, num_mines=10, use_dfs=True)
     
     if solver_type == 'base':
         solver = MinesweeperSolver(env)
