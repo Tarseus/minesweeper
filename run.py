@@ -1,11 +1,17 @@
 from env.minesweeper import MinesweeperEnv
-from src import MinesweeperSolver
+from src import *
 
-def main():
+def main(solver_type='base'):
     # 创建环境
-    env = MinesweeperEnv(width=8, height=8, num_mines=10)
-    # 创建求解器
-    solver = MinesweeperSolver(env)
+    if solver_type != 'logic':
+        env = MinesweeperEnv(width=8, height=8, num_mines=10, use_dfs=True)
+    else:
+        env = MinesweeperEnv(width=8, height=8, num_mines=10, use_dfs=False)
+    
+    if solver_type == 'base':
+        solver = MinesweeperSolver(env)
+    elif solver_type == 'logic':
+        solver = LogicSolver(env)
     
     # 运行一个回合
     state = env.reset()
@@ -14,7 +20,10 @@ def main():
     
     while not done:
         # 获取动作
-        action = solver.get_action(state)
+        if solver_type == 'logic':
+            action = solver.get_action(env)
+        else:
+            action = solver.get_action(state)
         if action is None:
             break
             
@@ -23,11 +32,11 @@ def main():
         total_reward += reward
         
         # 显示当前状态
-        print("\nBoard state:")
+        # print("\nBoard state:")
         env.render(mode='pygame')
-        print(f"Reward: {reward}")
+        # print(f"Reward: {reward}")
         
     print(f"\nGame Over! Total reward: {total_reward}")
 
 if __name__ == "__main__":
-    main()
+    main(solver_type='logic')

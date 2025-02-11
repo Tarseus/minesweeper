@@ -5,7 +5,7 @@ import gym
 import time
 
 class MinesweeperEnv(gym.Env):
-    def __init__(self, width=8, height=8, num_mines=10):
+    def __init__(self, width=8, height=8, num_mines=10, use_dfs=False):
         self.width = width
         self.height = height
         self.num_mines = num_mines
@@ -17,6 +17,7 @@ class MinesweeperEnv(gym.Env):
         # 0-8: number of mines around, 9: mine, 10: unknown
         # observation is the board state
         self.action_mask = np.ones(width * height, dtype=bool)
+        self.use_dfs = use_dfs
         self.reset()
         
         # pygame settings
@@ -86,7 +87,7 @@ class MinesweeperEnv(gym.Env):
             return self.board.copy(), -(self.width * self.height), self.done, {}
         else:
             self.board[x, y] = self.count_mines(x, y)
-            if self.board[x, y] == 0:
+            if self.board[x, y] == 0 and self.use_dfs:
                 self._update_mask_dfs(x, y)
             if np.count_nonzero(self.board == 10) == self.num_mines:
                 self.done = True
