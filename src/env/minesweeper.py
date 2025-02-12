@@ -81,17 +81,19 @@ class MinesweeperEnv(gym.Env):
                 mines_placed += 1
         
         self.done = False
-        return self.board.copy()
+        return self.board.copy(), {'action_mask': self.get_action_mask()}
     
     def step(self, action):
         x, y = action // self.height, action % self.height
         
+        print(f"Step: ({x}, {y})")
         assert self.action_mask[action], 'Invalid action'
         self.action_mask[action] = False
         
         info = {
             'is_success': False,
-            'is_game_over': False
+            'is_game_over': False,
+            'action_mask': self.get_action_mask(),
         }
         
         if (x, y) in self.mines:
@@ -99,7 +101,8 @@ class MinesweeperEnv(gym.Env):
             self.board[x, y] = 9
             self.done = True
             info['is_game_over'] = True
-            return self.board.copy(), -(self.width * self.height), self.done, info
+            obs = self.board.copy()
+            return obs, -(self.width * self.height), self.done, False, info
         else:
             self.board[x, y] = self.count_mines(x, y)
             if self.board[x, y] == 0 and self.use_dfs:
@@ -107,8 +110,10 @@ class MinesweeperEnv(gym.Env):
             if np.count_nonzero(self.board == 10) == self.num_mines:
                 self.done = True
                 info['is_success'] = True
-                return self.board.copy(), self.width * self.height, self.done, info
-            return self.board.copy(), 1, self.done, info
+                obs = self.board.copy()
+                return obs, self.width * self.height, self.done, False, info
+            obs = self.board.copy()
+            return obs, 1, self.done, False, info
     
     def _update_mask_dfs(self, x, y):
         for dx in [-1, 0, 1]:
@@ -190,7 +195,7 @@ class MinesweeperEnv(gym.Env):
             
             pygame.display.flip()
             
-            time.sleep(1)
+            time.sleep(0.1)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit()
@@ -200,3 +205,6 @@ class MinesweeperEnv(gym.Env):
     def close(self):
         if self.screen is not None:
             pygame.quit()
+            
+    def get_action_mask(self):
+        return self.action_mask.copy()

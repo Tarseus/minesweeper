@@ -17,7 +17,7 @@ from torch.distributions import Categorical
 from utils.env_utils import make_env
 import time
 from torch.utils.tensorboard import SummaryWriter
-
+import torch.nn.functional as F
 
 class Agent(nn.Module):
     def __init__(self, envs):
@@ -50,11 +50,31 @@ class Agent(nn.Module):
         )
         
     def get_value(self, x):
+        b, h, w = x.shape
+        x = x.long()
+        x = F.one_hot(x, num_classes=11).permute(0, 4, 2, 3).float()
+        x = self.shared_layers(x)
         return self.critic(x)
     
     def get_action_and_value(self, x, action=None, action_mask=None):
+        b, h, w = x.shape
+        if torch.all(x == 10):
+            center_x = w // 2
+            center_y = h // 2
+            action = center_x * h + center_y
+        x = x.long()
+        x = F.one_hot(x, num_classes=11).permute(0, 3, 1, 2).float()
+        x = self.shared_layers(x)
         logits = self.actor(x)
+        
+        if action_mask is not None:
+            action_mask = np.vstack(action_mask).astype(bool)
+            mask = torch.as_tensor(action_mask, dtype=torch.bool, device=logits.device)
+            logits[~mask] = float('-inf')
+            
         probs = Categorical(logits=logits)
+        if action is not None and not isinstance(action, torch.Tensor):
+            action = torch.as_tensor(action, dtype=torch.long, device=logits.device)
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
@@ -88,7 +108,7 @@ if __name__ == "__main__":
     env = MinesweeperEnv(
         width=8,
         height=8,
-        num_mines=10
+        num_mines=10,
     )
     envs = gym.vector.SyncVectorEnv(
         [make_env(env, config.seed + i, i, config.capture_video, run_name) for i in range(config.num_envs)]
@@ -108,9 +128,11 @@ if __name__ == "__main__":
     
     global_step = 0
     start_time = time.time()
-    next_obs = torch.Tensor(envs.reset()).to(device)
+    obs1, info = envs.reset()
+    next_obs = torch.Tensor(obs1).to(device)
     next_done = torch.zeros(config.num_envs).to(device)
     num_updates = config.total_timesteps // config.batch_size
+    action_masks = info["action_mask"]
     
     for update in range(num_updates):
         if config.anneal_lr:
@@ -126,22 +148,25 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(next_obs, 
+                                                                       action_mask=action_masks)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, done, info = envs.step(action.cpu().numpy())
+            next_obs, reward, terminated, truncated, info = envs.step(action.cpu().numpy())
+            action_masks = info["action_mask"]
+            done = np.logical_or(terminated, truncated)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
 
-            for item in info:
-                if "episode" in item.keys():
-                    print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
-                    break
+            if "final_info" in info:
+                for item in info["final_info"]:
+                    if item is not None:
+                        print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
+                        writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
+                        writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
                 
         # bootstrap value if not done
         with torch.no_grad():
@@ -188,7 +213,10 @@ if __name__ == "__main__":
                 end = start + config.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                    b_obs[mb_inds], 
+                    b_actions.long()[mb_inds],
+                )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
