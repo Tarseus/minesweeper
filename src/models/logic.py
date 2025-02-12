@@ -222,7 +222,13 @@ class LogicSolver(MinesweeperSolver):
                 return cell[0] * self.height + cell[1]
     
 if __name__ == "__main__":
-    env = MinesweeperEnv(width=30, height=16, num_mines=99, use_dfs=False)
+    env_config = {
+        'width': 8,
+        'height': 8,
+        'num_mines': 10,
+        'use_dfs': False
+    }
+    env = MinesweeperEnv(env_config)
     solver = LogicSolver(env)
     
     # 运行一个回合

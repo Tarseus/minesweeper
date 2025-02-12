@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 @dataclass
 class PPOConfig:
-    exp_name: str = "first_run"
+    exp_name: str = "ms_ai_ppo"
     learning_rate: float = 2.5e-4
     seed: int = 1
     total_timesteps: int = 100000
@@ -10,7 +10,7 @@ class PPOConfig:
     cuda: bool = False # use cuda
     track: bool = False # track training with wandb
     wandb_project: str = "minesweeper_ppo"
-    capture_video: bool = False # capture video of agent playing
+    capture_video: bool = True # capture video of agent playing
     
     # Algorithm specific arguments
     num_envs: int = 8
@@ -27,6 +27,7 @@ class PPOConfig:
     ent_coef: float = 0.01 # entropy coefficient
     vf_coef: float = 0.5 # value function coefficient
     max_grad_norm: float = 0.5 # max gradient norm
+    target_kl: float = None # target kl divergence
     
     batch_size = int(num_envs * num_steps)
     mini_batch_size = int(batch_size // num_mini_batch)

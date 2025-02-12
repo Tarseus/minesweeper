@@ -5,7 +5,11 @@ import gym
 import time
 
 class MinesweeperEnv(gym.Env):
-    def __init__(self, width=8, height=8, num_mines=10, use_dfs=False):
+    def __init__(self, config):
+        width = config.get('width', 8)
+        height = config.get('height', 8)
+        num_mines = config.get('num_mines', 10)
+        use_dfs = config.get('use_dfs', True)
         self.width = width
         self.height = height
         self.num_mines = num_mines
@@ -86,33 +90,43 @@ class MinesweeperEnv(gym.Env):
     def step(self, action):
         x, y = action // self.height, action % self.height
         
-        print(f"Step: ({x}, {y})")
+        if not self.action_mask[action]:
+            print(self.action_mask, action)
         assert self.action_mask[action], 'Invalid action'
         self.action_mask[action] = False
-        
-        info = {
-            'is_success': False,
-            'is_game_over': False,
-            'action_mask': self.get_action_mask(),
-        }
         
         if (x, y) in self.mines:
             # Game over
             self.board[x, y] = 9
             self.done = True
+            info = {
+                'is_success': False,
+                'is_game_over': False,
+                'action_mask': self.get_action_mask(),
+            }
             info['is_game_over'] = True
             obs = self.board.copy()
-            return obs, -(self.width * self.height), self.done, False, info
+            return obs, -10, self.done, False, info
         else:
             self.board[x, y] = self.count_mines(x, y)
             if self.board[x, y] == 0 and self.use_dfs:
                 self._update_mask_dfs(x, y)
             if np.count_nonzero(self.board == 10) == self.num_mines:
                 self.done = True
+                info = {
+                    'is_success': False,
+                    'is_game_over': False,
+                    'action_mask': self.get_action_mask(),
+                }
                 info['is_success'] = True
                 obs = self.board.copy()
-                return obs, self.width * self.height, self.done, False, info
+                return obs, 10, self.done, False, info
             obs = self.board.copy()
+            info = {
+                'is_success': False,
+                'is_game_over': False,
+                'action_mask': self.get_action_mask(),
+            }
             return obs, 1, self.done, False, info
     
     def _update_mask_dfs(self, x, y):
@@ -140,7 +154,7 @@ class MinesweeperEnv(gym.Env):
                         count += 1
         return count
                             
-    def render(self, mode='print'):
+    def render(self, mode='pygame'):
         if mode == 'print':
             for y in range(self.height):
                 for x in range(self.width):

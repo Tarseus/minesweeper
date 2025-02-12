@@ -50,18 +50,19 @@ class Agent(nn.Module):
         )
         
     def get_value(self, x):
-        b, h, w = x.shape
+        n, h, w = x.shape
         x = x.long()
-        x = F.one_hot(x, num_classes=11).permute(0, 4, 2, 3).float()
+        x = F.one_hot(x, num_classes=11).permute(0, 3, 1, 2).float()
         x = self.shared_layers(x)
         return self.critic(x)
     
     def get_action_and_value(self, x, action=None, action_mask=None):
-        b, h, w = x.shape
+        n, h, w = x.shape
         if torch.all(x == 10):
             center_x = w // 2
             center_y = h // 2
-            action = center_x * h + center_y
+            action_value = center_x * h + center_y
+            action = torch.full((n,), action_value, dtype=torch.long, device=x.device)
         x = x.long()
         x = F.one_hot(x, num_classes=11).permute(0, 3, 1, 2).float()
         x = self.shared_layers(x)
@@ -105,13 +106,13 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if config.cuda and torch.cuda.is_available() else "cpu")
     
-    env = MinesweeperEnv(
-        width=8,
-        height=8,
-        num_mines=10,
-    )
+    env_config = {
+        "width": 8,
+        "height": 8,
+        "num_mines": 10,
+    }
     envs = gym.vector.SyncVectorEnv(
-        [make_env(env, config.seed + i, i, config.capture_video, run_name) for i in range(config.num_envs)]
+        [make_env(env_config, config.seed + i, i, config.capture_video, run_name) for i in range(config.num_envs)]
     )
     
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "Only Discrete action spaces are supported"
@@ -156,6 +157,9 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminated, truncated, info = envs.step(action.cpu().numpy())
+            if config.capture_video:
+                for env_idx, env in enumerate(envs.envs):
+                    env.record_frame()
             action_masks = info["action_mask"]
             done = np.logical_or(terminated, truncated)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
@@ -207,10 +211,10 @@ if __name__ == "__main__":
         # Optimizing the policy and value network
         b_inds = np.arange(config.batch_size)
         clipfracs = []
-        for epoch in range(config.update_epochs):
+        for epoch in range(config.update_epoches):
             np.random.shuffle(b_inds)
-            for start in range(0, config.batch_size, config.minibatch_size):
-                end = start + config.minibatch_size
+            for start in range(0, config.batch_size, config.mini_batch_size):
+                end = start + config.mini_batch_size
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
@@ -237,7 +241,7 @@ if __name__ == "__main__":
 
                 # Value loss
                 newvalue = newvalue.view(-1)
-                if config.clip_vloss:
+                if config.clip_value_loss:
                     v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
                     v_clipped = b_values[mb_inds] + torch.clamp(
                         newvalue - b_values[mb_inds],
