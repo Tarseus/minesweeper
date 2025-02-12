@@ -1,4 +1,10 @@
-from src import MinesweeperSolver
+# Add the src directory to Python path
+import os, sys
+src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if src_path not in sys.path:
+    sys.path.append(src_path)
+from env.minesweeper import MinesweeperEnv
+from models.base import MinesweeperSolver
 import numpy as np
 import random
 
@@ -154,13 +160,7 @@ class LogicSolver(MinesweeperSolver):
                         if new_sentence not in self.knowledge:
                             knowledge_changed = True
                             self.knowledge.append(new_sentence)
-
-        # print('Current AI KB length: ', len(self.knowledge))
-        # print('Known Mines: ', self.mines)
-        # print('Safe Moves Remaining: ', self.safe - self.moves_made)
-        # print('====================================================')
-
-        
+                                    
     def get_neighbors(self, cell):
         neighbors = set()
         x, y = cell
@@ -204,3 +204,24 @@ class LogicSolver(MinesweeperSolver):
         x, y = action // self.height, action % self.height
         self.add_knowledge((x, y), self.env.count_mines(x, y))
         return action
+    
+if __name__ == "__main__":
+    env = MinesweeperEnv(width=8, height=8, num_mines=10, use_dfs=False)
+    solver = LogicSolver(env)
+    
+    # 运行一个回合
+    state = env.reset()
+    done = False
+    total_reward = 0
+    
+    while not done:
+        action = solver.get_action(env)
+        if action is None:
+            break
+            
+        state, reward, done, _ = env.step(action)
+        total_reward += reward
+        
+        env.render(mode='pygame')
+        
+    print(f"\nGame Over! Total reward: {total_reward}")

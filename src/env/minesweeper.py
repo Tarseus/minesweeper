@@ -18,7 +18,7 @@ class MinesweeperEnv(gym.Env):
         # observation is the board state
         self.action_mask = np.ones(width * height, dtype=bool)
         self.use_dfs = use_dfs
-        self.reset()
+        self.np_random = None
         
         # pygame settings
         self.cell_size = 41
@@ -45,6 +45,15 @@ class MinesweeperEnv(gym.Env):
         pygame.font.init()
         self.font = pygame.font.SysFont('Arial', 36)
         
+    def seed(self, seed=None):
+        """Set seed for random number generators"""
+        self.np_random, seed = gym.utils.seeding.np_random(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        self.action_space.seed(seed)
+        self.observation_space.seed(seed)
+        return [seed]
+        
     def reset(self):
         self.board.fill(10)
         self.mines = set()
@@ -65,8 +74,8 @@ class MinesweeperEnv(gym.Env):
         # generate mines
         mines_placed = 0
         while mines_placed < self.num_mines:
-            x = random.randint(0, self.width-1)
-            y = random.randint(0, self.height-1)
+            x = self.np_random.integers(0, self.width)
+            y = self.np_random.integers(0, self.height)
             if (x, y) not in self.mines and (x, y) not in safe_positions:
                 self.mines.add((x, y))
                 mines_placed += 1
@@ -80,19 +89,26 @@ class MinesweeperEnv(gym.Env):
         assert self.action_mask[action], 'Invalid action'
         self.action_mask[action] = False
         
+        info = {
+            'is_success': False,
+            'is_game_over': False
+        }
+        
         if (x, y) in self.mines:
             # Game over
             self.board[x, y] = 9
             self.done = True
-            return self.board.copy(), -(self.width * self.height), self.done, {}
+            info['is_game_over'] = True
+            return self.board.copy(), -(self.width * self.height), self.done, info
         else:
             self.board[x, y] = self.count_mines(x, y)
             if self.board[x, y] == 0 and self.use_dfs:
                 self._update_mask_dfs(x, y)
             if np.count_nonzero(self.board == 10) == self.num_mines:
                 self.done = True
-                return self.board.copy(), self.width * self.height, self.done, {}
-            return self.board.copy(), 1, self.done, {}
+                info['is_success'] = True
+                return self.board.copy(), self.width * self.height, self.done, info
+            return self.board.copy(), 1, self.done, info
     
     def _update_mask_dfs(self, x, y):
         for dx in [-1, 0, 1]:
