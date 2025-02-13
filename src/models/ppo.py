@@ -329,7 +329,7 @@ if __name__ == "__main__":
             val_env = MinesweeperEnv(env_config)
             val_env = VideoRecorderWrapper(val_env, 
                                             videos_dir = f"videos/{run_name}",
-                                            fps=0.5,
+                                            fps=10,
                                             name_prefix=f"val_{global_step}",
                                             if_save_frames=True,
                                         )

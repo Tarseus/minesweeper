@@ -17,7 +17,7 @@ class VideoRecoder:
         self.fps = fps
         self.name_prefix = name_prefix
         self.save_frames = if_save_frames
-        self.frames_dir = os.path.join(videos_dir, f"{name_prefix}-frames")
+        self.frames_dir = os.path.join(videos_dir, f"frames")
         if if_save_frames:
             os.makedirs(self.frames_dir, exist_ok=True)
         self.frame_count = 0
@@ -27,11 +27,14 @@ class VideoRecoder:
         if self.save_frames:
             self.save_frame(frame)
             self.frame_count += 1
+    def record_last_frame(self, frame):
+        self.stored_frames.append(frame)
             
     def save_frame(self, frame):
-        frame_name = f"{self.frame_count}.png"
+        frame_name = f"{self.name_prefix}-{self.frame_count}.png"
         frame_path = os.path.join(self.frames_dir, frame_name)
-        cv2.imwrite(frame_path, frame)
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(frame_path, frame_bgr)
     
     def save_video(self):
         if len(self.stored_frames) == 0:
@@ -45,7 +48,8 @@ class VideoRecoder:
         out = cv2.VideoWriter(video_path, fourcc, self.fps, (width, height))
         try:
             for frame in self.stored_frames:
-                out.write(frame)
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                out.write(frame_bgr)
         except Exception as e:
             print(f"保存视频时出错: {str(e)}")
         finally:
@@ -87,7 +91,7 @@ class VideoRecorderWrapper(gym.Wrapper):
             self.recorded_frames += 1
             if done:
                 frame = self.env.render(mode='pygame')
-                self.recorder.record_frame(frame)
+                self.recorder.record_last_frame(frame)
                 self.recorded_frames += 1
             
         return obs, reward, done, is_win, info
