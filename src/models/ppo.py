@@ -352,7 +352,6 @@ if __name__ == "__main__":
                 next_obs_val = torch.Tensor(next_obs_val).unsqueeze(0).to(device)
                 next_done_val = torch.Tensor([done_val]).to(device)
             val_env.close()
-            break
         
     envs.close()
     writer.close()
