@@ -5,7 +5,7 @@ class PPOConfig:
     exp_name: str = "ms_ai_ppo"
     learning_rate: float = 2.5e-4
     seed: int = 1
-    total_timesteps: int = 100000
+    total_timesteps: int = 2.5e6
     torch_deterministic: bool = False # torch.backends.cudnn.deterministic
     cuda: bool = False # use cuda
     track: bool = False # track training with wandb
