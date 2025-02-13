@@ -1,8 +1,9 @@
 import random
 import numpy as np
 import pygame
-import gym
+import gymnasium as gym
 import time
+import os
 
 class MinesweeperEnv(gym.Env):
     def __init__(self, config):
@@ -51,14 +52,14 @@ class MinesweeperEnv(gym.Env):
         
     def seed(self, seed=None):
         """Set seed for random number generators"""
+        assert seed is not None, 'Seed must be set'
         self.np_random, seed = gym.utils.seeding.np_random(seed)
-        np.random.seed(seed)
-        random.seed(seed)
         self.action_space.seed(seed)
         self.observation_space.seed(seed)
-        return [seed]
         
-    def reset(self):
+    def reset(self, **kwargs):
+        # seed = kwargs.get('seed', self.seed)
+        # self.seeding(seed)
         self.board.fill(10)
         self.mines = set()
         self.action_mask.fill(True)
@@ -164,6 +165,7 @@ class MinesweeperEnv(gym.Env):
                         print('*', end=' ')
                     else:
                         print(self.board[x, y], end=' ')
+            return self.board.copy()
         elif mode == 'pygame':
             if self.screen is None:
                 pygame.init()
@@ -209,12 +211,15 @@ class MinesweeperEnv(gym.Env):
             
             pygame.display.flip()
             
+            frame = pygame.surfarray.array3d(self.screen)
+            frame = frame.transpose((1, 0, 2))
+            
             time.sleep(0.1)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit()
                     return None
-        return self.board.copy()
+        return frame
     
     def close(self):
         if self.screen is not None:

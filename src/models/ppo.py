@@ -6,9 +6,10 @@ src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if src_path not in sys.path:
     sys.path.append(src_path)
 
+from wrappers.video_record import VideoRecorderWrapper
 from config.ppo_config import PPOConfig
 import numpy as np
-import gym
+import gymnasium as gym
 import torch
 import random
 from env.minesweeper import MinesweeperEnv
@@ -18,7 +19,22 @@ from utils.env_utils import make_env
 import time
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
-
+from tqdm import tqdm
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        
+    def forward(self, x):
+        residual = x
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.bn2(self.conv2(x))
+        x += residual
+        x = F.relu(x)
+        return x
 class Agent(nn.Module):
     def __init__(self, envs):
         super(Agent, self).__init__()
@@ -27,11 +43,25 @@ class Agent(nn.Module):
         
         self.shared_layers = nn.Sequential(
             nn.Conv2d(num_channels, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
+            
+            # 增加深度的卷积块
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64), 
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
+            
+            ResBlock(128),
+            ResBlock(128),
+            
+            nn.Conv2d(128, 64, kernel_size=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            
             nn.Flatten(),
             nn.Linear(64 * h * w, 512),
             nn.ReLU()
@@ -112,7 +142,7 @@ if __name__ == "__main__":
         "num_mines": 10,
     }
     envs = gym.vector.SyncVectorEnv(
-        [make_env(env_config, config.seed + i, i, config.capture_video, run_name) for i in range(config.num_envs)]
+        [make_env(env_config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
     )
     
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "Only Discrete action spaces are supported"
@@ -127,6 +157,13 @@ if __name__ == "__main__":
     rewards = torch.zeros((config.num_steps, config.num_envs)).to(device)
     dones = torch.zeros((config.num_steps, config.num_envs)).to(device)
     
+    obs_val = torch.zeros((config.num_steps, config.num_envs) + envs.single_observation_space.shape).to(device)
+    actions_val = torch.zeros((config.num_steps, config.num_envs) + envs.single_action_space.shape).to(device)
+    logprobs_val = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    values_val = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    rewards_val = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    dones_val = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    
     global_step = 0
     start_time = time.time()
     obs1, info = envs.reset()
@@ -135,7 +172,8 @@ if __name__ == "__main__":
     num_updates = config.total_timesteps // config.batch_size
     action_masks = info["action_mask"]
     
-    for update in range(num_updates):
+    progress_bar = tqdm(range(num_updates), dynamic_ncols=True)
+    for update in progress_bar:
         if config.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
             lrnow = config.learning_rate * frac
@@ -157,9 +195,6 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminated, truncated, info = envs.step(action.cpu().numpy())
-            if config.capture_video:
-                for env_idx, env in enumerate(envs.envs):
-                    env.record_frame()
             action_masks = info["action_mask"]
             done = np.logical_or(terminated, truncated)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
@@ -168,10 +203,10 @@ if __name__ == "__main__":
             if "final_info" in info:
                 for item in info["final_info"]:
                     if item is not None:
-                        print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
+                        # print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
-                
+                             
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -271,6 +306,13 @@ if __name__ == "__main__":
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
+        progress_bar.set_postfix({
+            'value_loss': f"{v_loss.item():.3f}",
+            'policy_loss': f"{pg_loss.item():.3f}",
+            'entropy': f"{entropy_loss.item():.3f}",
+            'var': f"{explained_var:.3f}",
+            'SPS': f"{int(global_step / (time.time() - start_time))}"
+        })
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -279,8 +321,38 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
+        if config.capture_video:
+            val_seed = np.random.randint(0, 100000)
+            # val_env = make_env(env_config, val_seed, 0, config.capture_video, run_name)()
+            val_env = MinesweeperEnv(env_config)
+            val_env = VideoRecorderWrapper(val_env, 
+                                            videos_dir = f"videos/{run_name}",
+                                            fps=0.5,
+                                            name_prefix=f"val_{global_step}",
+                                            if_save_frames=True,
+                                        )
+            obs2, info_val = val_env.reset()
+            next_obs_val = torch.Tensor(obs2).unsqueeze(0).to(device)
+            next_done_val = torch.zeros(1).to(device)
+            action_masks_val = [info_val["action_mask"]]
+
+            while True:
+                with torch.no_grad():
+                    action_val, logprob_val, _, value_val = agent.get_action_and_value(next_obs_val, 
+                                                                            action_mask=action_masks_val)
+                    
+                next_obs_val, reward_val, terminated, truncated, info_val = val_env.step(action_val[0].cpu().numpy())
+                action_masks_val = [info_val["action_mask"]]
+                done_val = np.logical_or(terminated, truncated)
+                
+                if done_val:
+                    break
+                next_obs_val = torch.Tensor(next_obs_val).unsqueeze(0).to(device)
+                next_done_val = torch.Tensor([done_val]).to(device)
+            val_env.close()
+            break
+        
     envs.close()
     writer.close()
