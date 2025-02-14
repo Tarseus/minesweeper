@@ -2,10 +2,23 @@ from dataclasses import dataclass
 
 @dataclass
 class PPOConfig:
+    #Environment specific arguments
+    width: int = 8
+    height: int = 8
+    num_mines: int = 10
+    use_dfs: bool = True
+    
+    # General arguments
     exp_name: str = "ms_ai_ppo"
+    if width == 8 and height == 8 and num_mines == 10:
+        exp_name = "ms_ai_ppo_easy"
+    elif width == 16 and height == 16 and num_mines == 40:
+        exp_name = "ms_ai_ppo_medium"
+    elif width == 30 and height == 16 and num_mines == 99:
+        exp_name = "ms_ai_ppo_hard"
     learning_rate: float = 2.5e-4
     seed: int = 1
-    total_timesteps: int = 2.5e6
+    total_timesteps: int = int(2.5e6)
     torch_deterministic: bool = False # torch.backends.cudnn.deterministic
     cuda: bool = False # use cuda
     track: bool = False # track training with wandb
@@ -31,3 +44,6 @@ class PPOConfig:
     
     batch_size = int(num_envs * num_steps)
     mini_batch_size = int(batch_size // num_mini_batch)
+    
+    def get(self, key, default):
+        return getattr(self, key) if hasattr(self, key) else default

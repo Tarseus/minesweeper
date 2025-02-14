@@ -136,13 +136,8 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if config.cuda and torch.cuda.is_available() else "cpu")
     
-    env_config = {
-        "width": 8,
-        "height": 8,
-        "num_mines": 10,
-    }
     envs = gym.vector.SyncVectorEnv(
-        [make_env(env_config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
+        [make_env(config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
     )
     
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "Only Discrete action spaces are supported"
@@ -201,12 +196,17 @@ if __name__ == "__main__":
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
 
             if "final_info" in info:
+                total_count = 0
+                total_win = 0
                 for item in info["final_info"]:
                     if item is not None:
-                        # print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
+                        total_count += 1
+                        if item.get("is_success", False):
+                            total_win += 1
                         writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
-                             
+                win_rate = total_win / total_count
+                writer.add_scalar("charts/win_rate", win_rate, global_step)
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -311,7 +311,8 @@ if __name__ == "__main__":
             'policy_loss': f"{pg_loss.item():.3f}",
             'entropy': f"{entropy_loss.item():.3f}",
             'var': f"{explained_var:.3f}",
-            'SPS': f"{int(global_step / (time.time() - start_time))}"
+            'SPS': f"{int(global_step / (time.time() - start_time))}",
+            'win_rate': f"{win_rate:.3f}",
         })
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
@@ -323,10 +324,10 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if config.capture_video:
+        if config.capture_video and update % 100 == 0:
             val_seed = np.random.randint(0, 100000)
             # val_env = make_env(env_config, val_seed, 0, config.capture_video, run_name)()
-            val_env = MinesweeperEnv(env_config)
+            val_env = MinesweeperEnv(config)
             val_env = VideoRecorderWrapper(val_env, 
                                             videos_dir = f"videos/{run_name}",
                                             fps=10,

@@ -11,6 +11,8 @@ class MinesweeperEnv(gym.Env):
         height = config.get('height', 8)
         num_mines = config.get('num_mines', 10)
         use_dfs = config.get('use_dfs', True)
+        self.num_envs = config.get('num_envs', 1)
+        
         self.width = width
         self.height = height
         self.num_mines = num_mines
@@ -24,6 +26,7 @@ class MinesweeperEnv(gym.Env):
         self.action_mask = np.ones(width * height, dtype=bool)
         self.use_dfs = use_dfs
         self.np_random = None
+        self.current_seed = 0
         
         # pygame settings
         self.cell_size = 41
@@ -57,9 +60,13 @@ class MinesweeperEnv(gym.Env):
         self.action_space.seed(seed)
         self.observation_space.seed(seed)
         
-    def reset(self, **kwargs):
-        # seed = kwargs.get('seed', self.seed)
-        # self.seeding(seed)
+    def reset(self, seed = None, **kwargs):
+        if seed is None:
+            self.current_seed = self.current_seed + self.num_envs
+            seed = self.current_seed
+        
+        self.seed(seed)
+        
         self.board.fill(10)
         self.mines = set()
         self.action_mask.fill(True)
