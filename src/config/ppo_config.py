@@ -18,10 +18,10 @@ class PPOConfig:
         exp_name = "ms_ai_ppo_hard"
     learning_rate: float = 2.5e-4
     seed: int = 1
-    total_timesteps: int = int(2.5e6)
+    total_timesteps: int = int(2.5e7)
     torch_deterministic: bool = False # torch.backends.cudnn.deterministic
-    cuda: bool = False # use cuda
-    track: bool = False # track training with wandb
+    cuda: bool = True # use cuda
+    track: bool = True # track training with wandb
     wandb_project: str = "minesweeper_ppo"
     capture_video: bool = True # capture video of agent playing
     
