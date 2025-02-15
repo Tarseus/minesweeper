@@ -55,17 +55,18 @@ class MinesweeperEnv(gym.Env):
         
     def seed(self, seed=None):
         """Set seed for random number generators"""
-        assert seed is not None, 'Seed must be set'
-        self.np_random, seed = gym.utils.seeding.np_random(seed)
-        self.action_space.seed(seed)
-        self.observation_space.seed(seed)
+        self.current_seed = seed
         
     def reset(self, seed = None, **kwargs):
         if seed is None:
             self.current_seed = self.current_seed + self.num_envs
             seed = self.current_seed
-        
-        self.seed(seed)
+
+        assert seed is not None, 'Seed must be set'
+        seed = seed % 2**32
+        self.np_random, seed = gym.utils.seeding.np_random(seed)
+        self.action_space.seed(seed)
+        self.observation_space.seed(seed)
         
         self.board.fill(10)
         self.mines = set()
@@ -93,6 +94,31 @@ class MinesweeperEnv(gym.Env):
                 mines_placed += 1
         
         self.done = False
+
+        self.cell_size = 41
+        self.screen_width = self.width * self.cell_size
+        self.screen_height = self.height * self.cell_size
+        self.screen = None
+        self.colors = {
+            'bg': (192, 192, 192), # background color: light gray
+            'grid': (128, 128, 128), # grid line color: gray
+            'unknown': (160, 160, 160), # unknown cell color: light gray
+            'mine': (255, 0, 0), # mine color: red
+            'numbers': [
+                (192, 192, 192), # 0: light gray
+                (0, 0, 255), # 1: blue
+                (0, 128, 0), # 2: green
+                (255, 0, 0), # 3: red
+                (0, 0, 128), # 4: dark blue
+                (128, 0, 0), # 5: dark red
+                (0, 128, 128), # 6: cyan
+                (0, 0, 0), # 7: black
+                (128, 128, 128) # 8: gray
+            ]
+        }
+        pygame.font.init()
+        self.font = pygame.font.SysFont('Arial', 36)
+        
         return self.board.copy(), {'action_mask': self.get_action_mask()}
     
     def step(self, action):
@@ -114,7 +140,7 @@ class MinesweeperEnv(gym.Env):
             }
             info['is_game_over'] = True
             obs = self.board.copy()
-            return obs, -10, self.done, False, info
+            return obs, -1.0, self.done, False, info
         else:
             self.board[x, y] = self.count_mines(x, y)
             if self.board[x, y] == 0 and self.use_dfs:
@@ -128,14 +154,14 @@ class MinesweeperEnv(gym.Env):
                 }
                 info['is_success'] = True
                 obs = self.board.copy()
-                return obs, 10, self.done, False, info
+                return obs, 1.0, self.done, False, info
             obs = self.board.copy()
             info = {
                 'is_success': False,
                 'is_game_over': False,
                 'action_mask': self.get_action_mask(),
             }
-            return obs, 1, self.done, False, info
+            return obs, 0.3, self.done, False, info
     
     def _update_mask_dfs(self, x, y):
         for dx in [-1, 0, 1]:

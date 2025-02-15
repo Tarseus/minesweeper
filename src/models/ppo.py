@@ -161,13 +161,18 @@ if __name__ == "__main__":
     
     global_step = 0
     start_time = time.time()
-    obs1, info = envs.reset()
-    next_obs = torch.Tensor(obs1).to(device)
+    
     next_done = torch.zeros(config.num_envs).to(device)
     num_updates = config.total_timesteps // config.batch_size
-    action_masks = info["action_mask"]
-    
     progress_bar = tqdm(range(num_updates), dynamic_ncols=True)
+
+    val_env = MinesweeperEnv(config)
+    val_env = VideoRecorderWrapper(val_env, 
+                                    videos_dir = f"videos/{run_name}",
+                                    fps=1,
+                                    name_prefix=f"val_{global_step}",
+                                    if_save_frames=True,
+                                )
     for update in progress_bar:
         if config.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
@@ -175,6 +180,9 @@ if __name__ == "__main__":
             optimizer.param_groups[0]['lr'] = lrnow
         
         # rollout trajectory
+        obs1, info = envs.reset()
+        action_masks = info["action_mask"]
+        next_obs = torch.Tensor(obs1).to(device)
         for step in range(0, config.num_steps):
             global_step += 1 * config.num_envs
             obs[step] = next_obs
@@ -324,17 +332,8 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if config.capture_video and update % 100 == 0:
-            val_seed = np.random.randint(0, 100000)
-            # val_env = make_env(env_config, val_seed, 0, config.capture_video, run_name)()
-            val_env = MinesweeperEnv(config)
-            val_env = VideoRecorderWrapper(val_env, 
-                                            videos_dir = f"videos/{run_name}",
-                                            fps=10,
-                                            name_prefix=f"val_{global_step}",
-                                            if_save_frames=True,
-                                        )
-            obs2, info_val = val_env.reset()
+        if config.capture_video and update % 1000 == 0:
+            obs2, info_val = val_env.reset(name_prefix=f"val_{global_step}")
             next_obs_val = torch.Tensor(obs2).unsqueeze(0).to(device)
             next_done_val = torch.zeros(1).to(device)
             action_masks_val = [info_val["action_mask"]]
@@ -352,6 +351,8 @@ if __name__ == "__main__":
                     break
                 next_obs_val = torch.Tensor(next_obs_val).unsqueeze(0).to(device)
                 next_done_val = torch.Tensor([done_val]).to(device)
+            
+            time.sleep(1)
             val_env.close()
         
     envs.close()

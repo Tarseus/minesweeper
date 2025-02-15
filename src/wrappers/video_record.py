@@ -75,11 +75,13 @@ class VideoRecorderWrapper(gym.Wrapper):
         
         self.recording = False
         self.recorded_frames = 0
+        self.if_save_frames = if_save_frames
         self.recorder = VideoRecoder(videos_dir, fps, name_prefix, if_save_frames)
         
-    def reset(self, **kwargs):
+    def reset(self, name_prefix = 'xxx', **kwargs):
         self.recorded_frames = 0
         self.recording = True
+        self.recorder = VideoRecoder(self.videos_dir, self.fps, name_prefix, self.if_save_frames)
         return self.env.reset(**kwargs)
     
     def step(self, action):

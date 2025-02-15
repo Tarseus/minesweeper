@@ -3,9 +3,9 @@ from dataclasses import dataclass
 @dataclass
 class PPOConfig:
     #Environment specific arguments
-    width: int = 8
-    height: int = 8
-    num_mines: int = 10
+    width: int = 30
+    height: int = 16
+    num_mines: int = 99
     use_dfs: bool = True
     
     # General arguments
@@ -18,7 +18,7 @@ class PPOConfig:
         exp_name = "ms_ai_ppo_hard"
     learning_rate: float = 2.5e-4
     seed: int = 1
-    total_timesteps: int = int(2.5e7)
+    total_timesteps: int = int(5e7)
     torch_deterministic: bool = False # torch.backends.cudnn.deterministic
     cuda: bool = True # use cuda
     track: bool = True # track training with wandb
