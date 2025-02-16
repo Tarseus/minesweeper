@@ -3,19 +3,24 @@ from dataclasses import dataclass
 @dataclass
 class PPOConfig:
     #Environment specific arguments
-    width: int = 30
-    height: int = 16
-    num_mines: int = 99
+    difficulty: str = "beginner"
+    assert difficulty in ["beginner", "intermediate", "expert"]
+    if difficulty == "beginner":
+        width: int = 9
+        height: int = 9
+        num_mines: int = 10
+    elif difficulty == "intermediate":
+        width: int = 16
+        height: int = 16
+        num_mines: int = 40
+    elif difficulty == "expert":
+        width: int = 30
+        height: int = 16
+        num_mines: int = 99
     use_dfs: bool = True
     
     # General arguments
-    exp_name: str = "ms_ai_ppo"
-    if width == 8 and height == 8 and num_mines == 10:
-        exp_name = "ms_ai_ppo_easy"
-    elif width == 16 and height == 16 and num_mines == 40:
-        exp_name = "ms_ai_ppo_medium"
-    elif width == 30 and height == 16 and num_mines == 99:
-        exp_name = "ms_ai_ppo_hard"
+    exp_name: str = "ms_ai_ppo" + difficulty
     learning_rate: float = 2.5e-4
     seed: int = 1
     total_timesteps: int = int(5e7)

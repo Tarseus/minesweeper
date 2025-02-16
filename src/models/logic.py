@@ -7,6 +7,9 @@ from env.minesweeper import MinesweeperEnv
 from models.base import MinesweeperSolver
 import numpy as np
 import random
+from config.ppo_config import PPOConfig
+from utils.env_utils import make_env
+import gymnasium as gym
 
 class Sentence():
     """
@@ -65,185 +68,157 @@ class LogicSolver(MinesweeperSolver):
     Minesweeper game player
     """
 
-    def __init__(self, env):
-
+    def __init__(self, envs):
         # Set initial height and width
-        self.height = env.height
-        self.width = env.width
+        self.num_envs, self.width, self.height = envs.observation_space.shape
 
-        # Keep track of which cells have been clicked on
-        self.moves_made = set()
+        # Keep track of which cells have been clicked on for each environment
+        self.moves_made = [set() for _ in range(envs.num_envs)]
 
-        # Keep track of cells known to be safe or mines
-        self.mines = set()
-        self.safes = set()
+        # Keep track of cells known to be safe or mines for each environment
+        self.mines = [set() for _ in range(envs.num_envs)]
+        self.safes = [set() for _ in range(envs.num_envs)]
 
-        # List of sentences about the game known to be true
-        self.knowledge = []
+        # List of sentences about the game known to be true for each environment
+        self.knowledge = [[] for _ in range(envs.num_envs)]
 
-    def mark_mine(self, cell):
-        """
-        Marks a cell as a mine, and updates all knowledge
-        to mark that cell as a mine as well.
-        """
-        self.mines.add(cell)
-        for sentence in self.knowledge:
+    def mark_mine(self, env_idx, cell):
+        self.mines[env_idx].add(cell)
+        for sentence in self.knowledge[env_idx]:
             sentence.mark_mine(cell)
 
-    def mark_safe(self, cell):
-        """
-        Marks a cell as safe, and updates all knowledge
-        to mark that cell as safe as well.
-        """
-        self.safes.add(cell)
-        for sentence in self.knowledge:
+    def mark_safe(self, env_idx, cell):
+        self.safes[env_idx].add(cell)
+        for sentence in self.knowledge[env_idx]:
             sentence.mark_safe(cell)
 
-    def add_knowledge(self, cell, count):
-        """
-        Called when the Minesweeper board tells us, for a given
-        safe cell, how many neighboring cells have mines in them.
+    def add_knowledge(self, env_idx, cell, count):
+        self.moves_made[env_idx].add(cell)
+        self.mark_safe(env_idx, cell)
 
-        This function should:
-            1) mark the cell as a move that has been made
-            2) mark the cell as safe
-            3) add a new sentence to the AI's knowledge base
-               based on the value of `cell` and `count`
-            4) mark any additional cells as safe or as mines
-               if it can be concluded based on the AI's knowledge base
-            5) add any new sentences to the AI's knowledge base
-               if they can be inferred from existing knowledge
-        """ 
-        self.moves_made.add(cell)
-        self.mark_safe(cell)
-
-        # start new sentence
         newSentenceCells = set()
-
         for i in range(cell[0] - 1, cell[0] + 2):
             for j in range(cell[1] - 1, cell[1] + 2):
-                if 0 <= i < self.width and 0 <= j < self.height and (i,j) != cell:
-                    if (i,j) in self.mines:
+                if 0 <= i < self.width and 0 <= j < self.height and (i, j) != cell:
+                    if (i, j) in self.mines[env_idx]:
                         count -= 1
-                    elif (i,j) not in self.safes:
-                        newSentenceCells.add((i,j))
-        
-        newSentence = Sentence(newSentenceCells, count)
-        self.knowledge.append(newSentence)
+                    elif (i, j) not in self.safes[env_idx]:
+                        newSentenceCells.add((i, j))
 
-        # mark additional cells as safe or mines based on any of the sentences
+        newSentence = Sentence(newSentenceCells, count)
+        self.knowledge[env_idx].append(newSentence)
+
         newMines = set()
         newSafes = set()
 
-        for sentence in self.knowledge:
+        for sentence in self.knowledge[env_idx]:
             for mine in sentence.known_mines():
-                if mine not in self.mines:
+                if mine not in self.mines[env_idx]:
                     newMines.add(mine)
             for safe in sentence.known_safes():
-                if safe not in self.safes:
+                if safe not in self.safes[env_idx]:
                     newSafes.add(safe)
 
         for mine in newMines:
-            self.mark_mine(mine)
+            self.mark_mine(env_idx, mine)
         for safe in newSafes:
-            self.mark_safe(safe)
+            self.mark_safe(env_idx, safe)
 
-        # add new sentences to the AI's knowledge based on any of the sentences
         newKnowledge = []
-        for sentence1 in self.knowledge:
-            for sentence2 in self.knowledge:
+        for sentence1 in self.knowledge[env_idx]:
+            for sentence2 in self.knowledge[env_idx]:
                 if sentence1 != sentence2 and sentence1.cells.issubset(sentence2.cells):
                     newCells = sentence2.cells - sentence1.cells
                     newCount = sentence2.count - sentence1.count
                     newKnowledge.append(Sentence(newCells, newCount))
 
         for sentence in newKnowledge:
-            if sentence not in self.knowledge:
-                self.knowledge.append(sentence)
+            if sentence not in self.knowledge[env_idx]:
+                self.knowledge[env_idx].append(sentence)
 
-        # remove empty sentences
         emptySentences = []
-        for sentence in self.knowledge:
+        for sentence in self.knowledge[env_idx]:
             if len(sentence.cells) == 0:
                 emptySentences.append(sentence)
 
         for sentence in emptySentences:
-            self.knowledge.remove(sentence)
-            
+            self.knowledge[env_idx].remove(sentence)
 
-    def make_safe_move(self):
-        """
-        Returns a safe cell to choose on the Minesweeper board.
-        The move must be known to be safe, and not already a move
-        that has been made.
-
-        This function may use the knowledge in self.mines, self.safes
-        and self.moves_made, but should not modify any of those values.
-        """
-        for cell in self.safes:
-            if cell not in self.moves_made:
-                return cell   
+    def make_safe_move(self, env_idx):
+        for cell in self.safes[env_idx]:
+            if cell not in self.moves_made[env_idx]:
+                return cell
         return None
 
-    def make_random_move(self):
-        """
-        Returns a move to make on the Minesweeper board.
-        Should choose randomly among cells that:
-            1) have not already been chosen, and
-            2) are not known to be mines
-        """
+    def make_random_move(self, env_idx):
         possibleMoves = []
-
         for i in range(self.width):
             for j in range(self.height):
-                if (i,j) not in self.mines and (i,j) not in self.moves_made:
-                    possibleMoves.append((i,j))
-        
+                if (i, j) not in self.mines[env_idx] and (i, j) not in self.moves_made[env_idx]:
+                    possibleMoves.append((i, j))
+
         if len(possibleMoves) == 0:
             return None
         else:
             return random.choice(possibleMoves)
-        
-    def get_action(self, env):
-        
-        if len(self.moves_made) == 0:
-            center_x = self.width // 2
-            center_y = self.height // 2
-            self.add_knowledge((center_x, center_y), env.count_mines(center_x, center_y))
-            return center_x * self.height + center_y
-        else:
-            cell = self.make_safe_move()
-            if cell is not None:
-                self.add_knowledge(cell, env.count_mines(cell[0], cell[1]))
-                return cell[0] * self.height + cell[1]
+
+    def get_actions(self, states):
+        actions = []
+        for env_idx, state in enumerate(states):
+            if len(self.moves_made[env_idx]) == 0:
+                center_x = self.width // 2
+                center_y = self.height // 2
+                self.moves_made[env_idx].add((center_x, center_y))
+                actions.append(center_x * self.height + center_y)
             else:
-                cell = self.make_random_move()
-                self.add_knowledge(cell, env.count_mines(cell[0], cell[1]))
-                return cell[0] * self.height + cell[1]
-    
+                for x in range(self.width):
+                    for y in range(self.height):
+                        if (x, y) not in self.moves_made[env_idx] and state[x, y] != 10:
+                            self.moves_made[env_idx].add((x, y))
+                            self.add_knowledge(env_idx, (x, y), state[x, y])
+                cell = self.make_safe_move(env_idx)
+                if cell is None:
+                    cell = self.make_random_move(env_idx)
+                if cell is None:
+                    # print(self.safes[env_idx])
+                    # print(self.mines[env_idx])
+                    # print(self.moves_made[env_idx])
+                    print(f"env_idx: {env_idx}, no valid moves found.")
+                assert cell is not None
+                actions.append(cell[0] * self.height + cell[1])
+        return actions
+
 if __name__ == "__main__":
     env_config = {
-        'width': 8,
-        'height': 8,
-        'num_mines': 10,
-        'use_dfs': False
+        'width': 30,
+        'height': 16,
+        'num_mines': 99,
+        'use_dfs': True,
     }
-    env = MinesweeperEnv(env_config)
-    solver = LogicSolver(env)
-    
-    # 运行一个回合
-    state = env.reset()
-    done = False
-    total_reward = 0
-    
-    while not done:
-        action = solver.get_action(env)
-        if action is None:
-            break
-            
-        state, reward, done, t, _ = env.step(action)
-        total_reward += reward
-        
-        env.render(mode='pygame')
-        
-    print(f"\nGame Over! Total reward: {total_reward}")
+    run_name = "test"
+    config = PPOConfig()
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
+    )
+
+    # env = MinesweeperEnv(env_config)
+    solver = LogicSolver(envs)
+
+    states, info = envs.reset()
+    done = [False] * config.num_envs
+    total_rewards = [0] * config.num_envs
+    steps = [0] * config.num_envs
+
+    for step in range(0, config.num_steps):
+        actions = solver.get_actions(states)
+        states, rewards, dones, terminates, infos = envs.step(actions)
+        for i in range(config.num_envs):
+            if not done[i]:
+                total_rewards[i] += rewards[i]
+                steps[i] += 1
+                if dones[i]:
+                    done[i] = True
+                    print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
+
+    for i in range(config.num_envs):
+        print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
