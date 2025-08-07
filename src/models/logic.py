@@ -213,12 +213,20 @@ if __name__ == "__main__":
         actions = solver.get_actions(states)
         states, rewards, dones, terminates, infos = envs.step(actions)
         for i in range(config.num_envs):
-            if not done[i]:
+            if "final_info" in infos:  # 检查是否有环境被重置
+                if infos["final_info"][i] is not None:  # 该环境确实结束了
+                    print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
+                    # 只需重置 solver 的状态
+                    solver.moves_made[i].clear()
+                    solver.mines[i].clear()
+                    solver.safes[i].clear()
+                    solver.knowledge[i].clear()
+                    # 重置计数器
+                    total_rewards[i] = 0
+                    steps[i] = 0
+            else:  # 正常累加奖励
                 total_rewards[i] += rewards[i]
                 steps[i] += 1
-                if dones[i]:
-                    done[i] = True
-                    print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
 
     for i in range(config.num_envs):
         print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")

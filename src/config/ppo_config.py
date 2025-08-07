@@ -20,7 +20,7 @@ class PPOConfig:
     use_dfs: bool = True
     
     # General arguments
-    exp_name: str = "ms_ai_ppo" + difficulty
+    exp_name: str = "ms_ai_ppo_" + difficulty
     learning_rate: float = 2.5e-4
     seed: int = 1
     total_timesteps: int = int(5e7)
@@ -50,5 +50,11 @@ class PPOConfig:
     batch_size = int(num_envs * num_steps)
     mini_batch_size = int(batch_size // num_mini_batch)
     
+    # Pretrain arguments
+    use_pretrain: bool = True
+    pretrain_model_path: str = "checkpoints/pretrained_model"
+    pretrain_total_timesteps: int = int(5e6)
+    pretrain_update_epoches: int = 4
+
     def get(self, key, default):
         return getattr(self, key) if hasattr(self, key) else default

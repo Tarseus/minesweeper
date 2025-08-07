@@ -20,6 +20,8 @@ import time
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 from tqdm import tqdm
+from models.logic import LogicSolver
+
 class ResBlock(nn.Module):
     def __init__(self, channels):
         super(ResBlock, self).__init__()
@@ -46,7 +48,6 @@ class Agent(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             
-            # 增加深度的卷积块
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64), 
             nn.ReLU(),
@@ -78,6 +79,8 @@ class Agent(nn.Module):
             nn.ReLU(),
             nn.Linear(256, 1)
         )
+
+        self.layer_norm = nn.LayerNorm(512)
         
     def get_value(self, x):
         n, h, w = x.shape
@@ -96,7 +99,14 @@ class Agent(nn.Module):
         x = x.long()
         x = F.one_hot(x, num_classes=11).permute(0, 3, 1, 2).float()
         x = self.shared_layers(x)
+        x = self.layer_norm(x)
         logits = self.actor(x)
+        logits = torch.clamp(logits, -100, 100)
+
+        if torch.isnan(logits).any():
+            print("NaN detected in logits")
+            print("Max value in logits:", torch.max(logits))
+            print("Min value in logits:", torch.min(logits))
         
         if action_mask is not None:
             action_mask = np.vstack(action_mask).astype(bool)
@@ -112,7 +122,7 @@ class Agent(nn.Module):
     
 if __name__ == "__main__":
     config = PPOConfig()
-    run_name = f"{config.exp_name}_{config.seed}_{int(time.time())}"
+    run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
     if config.track:
         import wandb
         wandb.init(
@@ -143,6 +153,9 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "Only Discrete action spaces are supported"
 
     agent = Agent(envs).to(device)
+    if config.use_pretrain:
+        agent.load_state_dict(torch.load(config.pretrain_model_path + "_" + config.difficulty + ".pth"))
+        # agent.load_state_dict(torch.load(config.pretrain_model_path + ".pth"))
     optimizer = torch.optim.Adam(agent.parameters(), lr=config.learning_rate, eps=1e-5)
     
     obs = torch.zeros((config.num_steps, config.num_envs) + envs.single_observation_space.shape).to(device)
