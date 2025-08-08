@@ -93,7 +93,10 @@ class VideoRecorderWrapper(gym.Wrapper):
             self.recorded_frames += 1
             if done:
                 frame = self.env.render(mode='pygame')
-                self.recorder.record_last_frame(frame)
+                if frame is not None:
+                    self.recorder.record_last_frame(frame)
+                else:
+                    print("Warning: Frame is None, skipping last frame recording.")
                 self.recorded_frames += 1
             
         return obs, reward, done, is_win, info

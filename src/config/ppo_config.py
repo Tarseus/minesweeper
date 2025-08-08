@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class PPOConfig:
     #Environment specific arguments
-    difficulty: str = "beginner"
+    difficulty: str = "expert"
     assert difficulty in ["beginner", "intermediate", "expert"]
     if difficulty == "beginner":
         width: int = 9
@@ -30,11 +30,11 @@ class PPOConfig:
     wandb_project: str = "minesweeper_ppo"
     capture_video: bool = True # capture video of agent playing
     capture_video_freq: int = 1000
-    save_freq: int = 100 # save model every n updates
+    save_freq: int = 1000 # save model every n updates
     
     # Algorithm specific arguments
-    num_envs: int = 32
-    num_steps: int = 128
+    num_envs: int = 8
+    num_steps: int = 512
     anneal_lr: bool = True # toggle learning rate annealing
     gae: bool = True # toggle generalized advantage estimation
     gamma: float = 0.99 # discount factor
@@ -55,7 +55,7 @@ class PPOConfig:
     # Pretrain arguments
     use_pretrain: bool = False
     pretrain_model_path: str = "checkpoints/pretrained_model"
-    pretrain_total_timesteps: int = int(5e6)
+    pretrain_total_timesteps: int = 8_192_000   # int(5e6)
     pretrain_update_epoches: int = 4
 
     def get(self, key, default):

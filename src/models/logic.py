@@ -3,12 +3,11 @@ import os, sys
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if src_path not in sys.path:
     sys.path.append(src_path)
-from env.minesweeper import MinesweeperEnv
 from models.base import MinesweeperSolver
 import numpy as np
 import random
 from config.ppo_config import PPOConfig
-from utils.env_utils import make_env
+# from utils.env_utils import make_env
 import gymnasium as gym
 
 class Sentence():
@@ -188,45 +187,45 @@ class LogicSolver(MinesweeperSolver):
                 actions.append(cell[0] * self.height + cell[1])
         return actions
 
-if __name__ == "__main__":
-    env_config = {
-        'width': 30,
-        'height': 16,
-        'num_mines': 99,
-        'use_dfs': True,
-    }
-    run_name = "test"
-    config = PPOConfig()
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
-    )
+# if __name__ == "__main__":
+#     env_config = {
+#         'width': 30,
+#         'height': 16,
+#         'num_mines': 99,
+#         'use_dfs': True,
+#     }
+#     run_name = "test"
+#     config = PPOConfig()
+#     envs = gym.vector.SyncVectorEnv(
+#         [make_env(config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
+#     )
 
-    # env = MinesweeperEnv(env_config)
-    solver = LogicSolver(envs)
+#     # env = MinesweeperEnv(env_config)
+#     solver = LogicSolver(envs)
 
-    states, info = envs.reset()
-    done = [False] * config.num_envs
-    total_rewards = [0] * config.num_envs
-    steps = [0] * config.num_envs
+#     states, info = envs.reset()
+#     done = [False] * config.num_envs
+#     total_rewards = [0] * config.num_envs
+#     steps = [0] * config.num_envs
 
-    for step in range(0, config.num_steps):
-        actions = solver.get_actions(states)
-        states, rewards, dones, terminates, infos = envs.step(actions)
-        for i in range(config.num_envs):
-            if "final_info" in infos:  # 检查是否有环境被重置
-                if infos["final_info"][i] is not None:  # 该环境确实结束了
-                    print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
-                    # 只需重置 solver 的状态
-                    solver.moves_made[i].clear()
-                    solver.mines[i].clear()
-                    solver.safes[i].clear()
-                    solver.knowledge[i].clear()
-                    # 重置计数器
-                    total_rewards[i] = 0
-                    steps[i] = 0
-            else:  # 正常累加奖励
-                total_rewards[i] += rewards[i]
-                steps[i] += 1
+#     for step in range(0, config.num_steps):
+#         actions = solver.get_actions(states)
+#         states, rewards, dones, terminates, infos = envs.step(actions)
+#         for i in range(config.num_envs):
+#             if "final_info" in infos:  # 检查是否有环境被重置
+#                 if infos["final_info"][i] is not None:  # 该环境确实结束了
+#                     print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
+#                     # 只需重置 solver 的状态
+#                     solver.moves_made[i].clear()
+#                     solver.mines[i].clear()
+#                     solver.safes[i].clear()
+#                     solver.knowledge[i].clear()
+#                     # 重置计数器
+#                     total_rewards[i] = 0
+#                     steps[i] = 0
+#             else:  # 正常累加奖励
+#                 total_rewards[i] += rewards[i]
+#                 steps[i] += 1
 
-    for i in range(config.num_envs):
-        print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")
+#     for i in range(config.num_envs):
+#         print(f"\nGame Over for env {i}! Total reward: {total_rewards[i]:.1f}")

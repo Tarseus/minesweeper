@@ -2,7 +2,6 @@ import os, sys
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if src_path not in sys.path:
     sys.path.append(src_path)
-from env.minesweeper import MinesweeperEnv
 import numpy as np
 
 class MinesweeperSolver:
@@ -34,28 +33,30 @@ class MinesweeperSolver:
         
         return np.random.choice(valid_actions)
     
-if __name__ == "__main__":
-    env = MinesweeperEnv(
-        width=30, 
-        height=16, 
-        num_mines=99, 
-        use_dfs=True
-    )
-    solver = MinesweeperSolver(env)
+# if __name__ == "__main__":
+#     from env.minesweeper import MinesweeperEnv
+
+#     env = MinesweeperEnv(
+#         width=30, 
+#         height=16, 
+#         num_mines=99, 
+#         use_dfs=True
+#     )
+#     solver = MinesweeperSolver(env)
     
-    # 运行一个回合
-    state = env.reset()
-    done = False
-    total_reward = 0
+#     # 运行一个回合
+#     state = env.reset()
+#     done = False
+#     total_reward = 0
     
-    while not done:
-        action = solver.get_action(state)
-        if action is None:
-            break
+#     while not done:
+#         action = solver.get_action(state)
+#         if action is None:
+#             break
             
-        state, reward, done, _ = env.step(action)
-        total_reward += reward
+#         state, reward, done, _ = env.step(action)
+#         total_reward += reward
         
-        env.render(mode='pygame')
+#         env.render(mode='pygame')
         
-    print(f"\nGame Over! Total reward: {total_reward}")
+#     print(f"\nGame Over! Total reward: {total_reward}")

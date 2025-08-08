@@ -91,7 +91,7 @@ class Agent(nn.Module):
             nn.ReLU(inplace=True),
         ]
         # 6 个 ResBlock 足够；若想更深可自行加
-        for _ in range(6):
+        for _ in range(7):
             layers.append(ResBlock(64))
         self.backbone = nn.Sequential(*layers)
 
