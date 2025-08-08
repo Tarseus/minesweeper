@@ -1,6 +1,8 @@
 import sys
 import os
-
+os.environ['http_proxy'] = 'http://127.0.0.1:7890'
+os.environ['https_proxy'] = 'http://127.0.0.1:7890'
+os.environ["WANDB_MODE"] = "offline"
 # Add the src directory to Python path
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if src_path not in sys.path:
@@ -22,103 +24,138 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from models.logic import LogicSolver
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Categorical
+import numpy as np
+
+def format_seconds(seconds):
+    seconds = int(seconds)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+class SqueezeExcite(nn.Module):
+    """通道注意力 (SE)"""
+    def __init__(self, channels, reduction=8):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        w = self.fc(self.avg_pool(x))
+        return x * w
+
+
 class ResBlock(nn.Module):
     def __init__(self, channels):
-        super(ResBlock, self).__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(channels)
-        
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(channels)
+        self.se    = SqueezeExcite(channels)
+        self.relu  = nn.ReLU(inplace=True)
+
     def forward(self, x):
-        residual = x
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = self.bn2(self.conv2(x))
-        x += residual
-        x = F.relu(x)
-        return x
+        y = self.relu(self.bn1(self.conv1(x)))
+        y = self.bn2(self.conv2(y))
+        y = self.se(y)
+        return self.relu(x + y)
+
+
 class Agent(nn.Module):
+    """
+    9×9–10 雷（或任意尺寸）扫雷智能体：
+      - 输入：one-hot 11 通道 (B,11,H,W)
+      - Policy：1×1 Conv → (B,1,H,W) → 展平成 (B,H*W) logits
+      - Value：GAP → 64 → FC → 1
+    """
     def __init__(self, envs):
-        super(Agent, self).__init__()
-        h, w = envs.single_observation_space.shape
-        num_channels = 11
-        
-        self.shared_layers = nn.Sequential(
-            nn.Conv2d(num_channels, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64), 
-            nn.ReLU(),
-            
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            
-            ResBlock(128),
-            ResBlock(128),
-            
-            nn.Conv2d(128, 64, kernel_size=1),
+        super().__init__()
+        h, w = envs.single_observation_space.shape         # board size
+        self.board_size = h * w
+        in_ch = 11                                         # one-hot 通道数
+
+        # ─── Backbone ──────────────────────────────────────────────────────────
+        layers = [
+            nn.Conv2d(in_ch, 64, 3, padding=1, bias=False),
             nn.BatchNorm2d(64),
-            nn.ReLU(),
-            
-            nn.Flatten(),
-            nn.Linear(64 * h * w, 512),
-            nn.ReLU()
-        )
-        
-        self.actor = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, envs.single_action_space.n)
-        )
-        
-        self.critic = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1)
+            nn.ReLU(inplace=True),
+        ]
+        # 6 个 ResBlock 足够；若想更深可自行加
+        for _ in range(6):
+            layers.append(ResBlock(64))
+        self.backbone = nn.Sequential(*layers)
+
+        # ─── Heads ─────────────────────────────────────────────────────────────
+        self.policy_head = nn.Conv2d(64, 1, kernel_size=1)       # (B,1,H,W)
+
+        self.value_head = nn.Sequential(                         # (B,64,1,1)
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),                                        # → (B,64)
+            nn.LayerNorm(64),
+            nn.Linear(64, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 1)
         )
 
-        self.layer_norm = nn.LayerNorm(512)
-        
+    # --------------------------------------------------------------------- #
+    # ↓↓↓  Utility  ↓↓↓
+    # --------------------------------------------------------------------- #
+    @staticmethod
+    def _one_hot(obs: torch.Tensor) -> torch.Tensor:
+        """把 (B,H,W) board int 转 one-hot → (B,11,H,W)"""
+        return F.one_hot(obs.long(), num_classes=11).permute(0, 3, 1, 2).float()
+
+    # --------------------------------------------------------------------- #
+    # ↓↓↓  Public API  ↓↓↓
+    # --------------------------------------------------------------------- #
     def get_value(self, x):
-        n, h, w = x.shape
-        x = x.long()
-        x = F.one_hot(x, num_classes=11).permute(0, 3, 1, 2).float()
-        x = self.shared_layers(x)
-        return self.critic(x)
-    
-    def get_action_and_value(self, x, action=None, action_mask=None):
-        n, h, w = x.shape
-        if torch.all(x == 10):
-            center_x = w // 2
-            center_y = h // 2
-            action_value = center_x * h + center_y
-            action = torch.full((n,), action_value, dtype=torch.long, device=x.device)
-        x = x.long()
-        x = F.one_hot(x, num_classes=11).permute(0, 3, 1, 2).float()
-        x = self.shared_layers(x)
-        x = self.layer_norm(x)
-        logits = self.actor(x)
-        logits = torch.clamp(logits, -100, 100)
+        feat = self.backbone(self._one_hot(x))
+        return self.value_head(feat)
 
-        if torch.isnan(logits).any():
-            print("NaN detected in logits")
-            print("Max value in logits:", torch.max(logits))
-            print("Min value in logits:", torch.min(logits))
-        
+    def get_action_and_value(self, x, action=None, action_mask=None):
+        """
+        Args:
+            x            : (B,H,W) board
+            action       : optional pre-selected tensor
+            action_mask  : list/ndarray[(H*W,)]  True=legal / False=illegal
+        Returns:
+            action, log_prob, entropy, value
+        """
+        B, H, W = x.shape
+        device  = x.device
+
+        # “首步点中心”启发式
+        if torch.all(x == 10):
+            center = (H // 2) * W + (W // 2)
+            action = torch.full((B,), center, dtype=torch.long, device=device)
+
+        feat   = self.backbone(self._one_hot(x))
+        logits = self.policy_head(feat).flatten(1)          # (B,H*W)
+
+        # 掩掉非法动作
         if action_mask is not None:
-            action_mask = np.vstack(action_mask).astype(bool)
-            mask = torch.as_tensor(action_mask, dtype=torch.bool, device=logits.device)
-            logits[~mask] = float('-inf')
-            
+            mask = torch.as_tensor(np.vstack(action_mask), dtype=torch.bool, device=device)
+            logits = logits.masked_fill(~mask, -1e9)
+
         probs = Categorical(logits=logits)
-        if action is not None and not isinstance(action, torch.Tensor):
-            action = torch.as_tensor(action, dtype=torch.long, device=logits.device)
+
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+        elif not isinstance(action, torch.Tensor):
+            action = torch.as_tensor(action, dtype=torch.long, device=device)
+
+        value = self.value_head(feat)
+        return action, probs.log_prob(action), probs.entropy(), value
     
 if __name__ == "__main__":
     config = PPOConfig()
@@ -132,20 +169,22 @@ if __name__ == "__main__":
             name=config.exp_name,
             monitor_gym=True,
             save_code=True,
+            mode="offline",
         )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
     )
-    
+
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     torch.backends.cudnn.deterministic = config.torch_deterministic
     
     device = torch.device("cuda" if config.cuda and torch.cuda.is_available() else "cpu")
-    
+    print(f"Using device: {device}")
+
     envs = gym.vector.SyncVectorEnv(
         [make_env(config, config.seed + i, i, False, run_name) for i in range(config.num_envs)]
     )
@@ -156,6 +195,9 @@ if __name__ == "__main__":
     if config.use_pretrain:
         agent.load_state_dict(torch.load(config.pretrain_model_path + "_" + config.difficulty + ".pth"))
         # agent.load_state_dict(torch.load(config.pretrain_model_path + ".pth"))
+    if config.track:
+        wandb.watch(agent, log="all", log_freq=1000)
+    
     optimizer = torch.optim.Adam(agent.parameters(), lr=config.learning_rate, eps=1e-5)
     
     obs = torch.zeros((config.num_steps, config.num_envs) + envs.single_observation_space.shape).to(device)
@@ -177,7 +219,7 @@ if __name__ == "__main__":
     
     next_done = torch.zeros(config.num_envs).to(device)
     num_updates = config.total_timesteps // config.batch_size
-    progress_bar = tqdm(range(num_updates), dynamic_ncols=True)
+    # progress_bar = tqdm(range(num_updates), dynamic_ncols=True)
 
     val_env = MinesweeperEnv(config)
     val_env = VideoRecorderWrapper(val_env, 
@@ -186,7 +228,7 @@ if __name__ == "__main__":
                                     name_prefix=f"val_{global_step}",
                                     if_save_frames=True,
                                 )
-    for update in progress_bar:
+    for update in range(1, num_updates + 1):
         if config.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
             lrnow = config.learning_rate * frac
@@ -327,14 +369,29 @@ if __name__ == "__main__":
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        progress_bar.set_postfix({
-            'value_loss': f"{v_loss.item():.3f}",
-            'policy_loss': f"{pg_loss.item():.3f}",
-            'entropy': f"{entropy_loss.item():.3f}",
-            'var': f"{explained_var:.3f}",
-            'SPS': f"{int(global_step / (time.time() - start_time))}",
-            'win_rate': f"{win_rate:.3f}",
-        })
+        # progress_bar.set_postfix({
+        #     'value_loss': f"{v_loss.item():.3f}",
+        #     'policy_loss': f"{pg_loss.item():.3f}",
+        #     'entropy': f"{entropy_loss.item():.3f}",
+        #     'var': f"{explained_var:.3f}",
+        #     'SPS': f"{int(global_step / (time.time() - start_time))}",
+        #     'win_rate': f"{win_rate:.3f}",
+        # })
+        elapsed = time.time() - start_time
+        progress = update / num_updates
+        if progress > 0:
+            total_estimated = elapsed / progress
+            remaining = total_estimated - elapsed
+        else:
+            remaining = 0
+        print(f"Update {update}/{num_updates} | "
+            f"Value Loss: {v_loss.item():.3f} | "
+            f"Policy Loss: {pg_loss.item():.3f} | "
+            f"Entropy: {entropy_loss.item():.3f} | "
+            f"Var: {explained_var:.3f} | "
+            f"SPS: {int(global_step / (time.time() - start_time))} | "
+            f"Win Rate: {win_rate:.3f} | "
+            f"ETA: {format_seconds(remaining)}")
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -345,28 +402,33 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if config.capture_video and update % 1000 == 0:
-            obs2, info_val = val_env.reset(name_prefix=f"val_{global_step}")
-            next_obs_val = torch.Tensor(obs2).unsqueeze(0).to(device)
-            next_done_val = torch.zeros(1).to(device)
-            action_masks_val = [info_val["action_mask"]]
-
-            while True:
-                with torch.no_grad():
-                    action_val, logprob_val, _, value_val = agent.get_action_and_value(next_obs_val, 
-                                                                            action_mask=action_masks_val)
-                    
-                next_obs_val, reward_val, terminated, truncated, info_val = val_env.step(action_val[0].cpu().numpy())
+        if update % config.save_freq == 0 and config.track:
+            model_path = os.path.join(wandb.run.dir, f"ppo_{config.difficulty}_{global_step}.pth")
+            torch.save(agent.state_dict(), model_path)
+            print(f"Model saved to {model_path}")
+        if update % config.capture_video_freq == 0:
+            if config.capture_video:
+                obs2, info_val = val_env.reset(name_prefix=f"val_{global_step}")
+                next_obs_val = torch.Tensor(obs2).unsqueeze(0).to(device)
+                next_done_val = torch.zeros(1).to(device)
                 action_masks_val = [info_val["action_mask"]]
-                done_val = np.logical_or(terminated, truncated)
+
+                while True:
+                    with torch.no_grad():
+                        action_val, logprob_val, _, value_val = agent.get_action_and_value(next_obs_val, 
+                                                                                action_mask=action_masks_val)
+                        
+                    next_obs_val, reward_val, terminated, truncated, info_val = val_env.step(action_val[0].cpu().numpy())
+                    action_masks_val = [info_val["action_mask"]]
+                    done_val = np.logical_or(terminated, truncated)
+                    
+                    if done_val:
+                        break
+                    next_obs_val = torch.Tensor(next_obs_val).unsqueeze(0).to(device)
+                    next_done_val = torch.Tensor([done_val]).to(device)
                 
-                if done_val:
-                    break
-                next_obs_val = torch.Tensor(next_obs_val).unsqueeze(0).to(device)
-                next_done_val = torch.Tensor([done_val]).to(device)
-            
-            time.sleep(1)
-            val_env.close()
+                time.sleep(1)
+                val_env.close()
         
     envs.close()
     writer.close()

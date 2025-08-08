@@ -28,6 +28,14 @@ class MinesweeperEnv(gym.Env):
         self.np_random = None
         self.current_seed = 0
         
+        # variable to track information
+        self.info = {
+            'is_success': False,
+            'is_game_over': False,
+            'action_mask': self.get_action_mask(),
+            'revealed_cells': 0,
+        }
+
         # pygame settings
         self.cell_size = 41
         self.screen_width = self.width * self.cell_size
@@ -94,30 +102,6 @@ class MinesweeperEnv(gym.Env):
                 mines_placed += 1
         
         self.done = False
-
-        self.cell_size = 41
-        self.screen_width = self.width * self.cell_size
-        self.screen_height = self.height * self.cell_size
-        self.screen = None
-        self.colors = {
-            'bg': (192, 192, 192), # background color: light gray
-            'grid': (128, 128, 128), # grid line color: gray
-            'unknown': (160, 160, 160), # unknown cell color: light gray
-            'mine': (255, 0, 0), # mine color: red
-            'numbers': [
-                (192, 192, 192), # 0: light gray
-                (0, 0, 255), # 1: blue
-                (0, 128, 0), # 2: green
-                (255, 0, 0), # 3: red
-                (0, 0, 128), # 4: dark blue
-                (128, 0, 0), # 5: dark red
-                (0, 128, 128), # 6: cyan
-                (0, 0, 0), # 7: black
-                (128, 128, 128) # 8: gray
-            ]
-        }
-        pygame.font.init()
-        self.font = pygame.font.SysFont('Arial', 36)
         
         return self.board.copy(), {'action_mask': self.get_action_mask()}
     
@@ -128,41 +112,46 @@ class MinesweeperEnv(gym.Env):
             print(self.action_mask, action)
         assert self.action_mask[action], 'Invalid action'
         self.action_mask[action] = False
-        
+        last_revealed = np.count_nonzero(self.board != 10)
+
         if (x, y) in self.mines:
             # Game over
             self.board[x, y] = 9
             self.done = True
-            info = {
-                'is_success': False,
-                'is_game_over': False,
-                'action_mask': self.get_action_mask(),
-            }
-            info['is_game_over'] = True
+            self.info.update({
+                "is_game_over": True,
+                "revealed_cells": np.count_nonzero(self.board != 10),
+                "action_mask": self.get_action_mask(),
+            })
             obs = self.board.copy()
-            return obs, -1.0, self.done, False, info
+            reward = -1.0
+            return obs, reward, self.done, False, self.info
         else:
             self.board[x, y] = self.count_mines(x, y)
             if self.board[x, y] == 0 and self.use_dfs:
                 self._update_mask_dfs(x, y)
             if np.count_nonzero(self.board == 10) == self.num_mines:
                 self.done = True
-                info = {
-                    'is_success': False,
-                    'is_game_over': False,
-                    'action_mask': self.get_action_mask(),
-                }
-                info['is_success'] = True
+                self.info.update({
+                    "is_success": True,
+                    "revealed_cells": np.count_nonzero(self.board != 10),
+                    "action_mask": self.get_action_mask(),
+                })
                 obs = self.board.copy()
-                return obs, 1.0, self.done, False, info
+                reward = 1.0
+                return obs, reward, self.done, False, self.info
             obs = self.board.copy()
-            info = {
-                'is_success': False,
-                'is_game_over': False,
-                'action_mask': self.get_action_mask(),
-            }
-            return obs, 0.3, self.done, False, info
-    
+            self.info.update({
+                "is_success": False,
+                "is_game_over": False,
+                "revealed_cells": np.count_nonzero(self.board != 10),
+                "action_mask": self.get_action_mask(),
+            })
+            revealed_increase = np.count_nonzero(self.board != 10) - last_revealed
+            assert revealed_increase > 0, "Revealed cells should increase"
+            reward = 1.0 * revealed_increase / (self.width * self.height - self.num_mines)
+            return obs, reward, self.done, False, self.info
+
     def _update_mask_dfs(self, x, y):
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:

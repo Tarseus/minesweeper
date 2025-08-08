@@ -29,9 +29,11 @@ class PPOConfig:
     track: bool = True # track training with wandb
     wandb_project: str = "minesweeper_ppo"
     capture_video: bool = True # capture video of agent playing
+    capture_video_freq: int = 1000
+    save_freq: int = 100 # save model every n updates
     
     # Algorithm specific arguments
-    num_envs: int = 8
+    num_envs: int = 32
     num_steps: int = 128
     anneal_lr: bool = True # toggle learning rate annealing
     gae: bool = True # toggle generalized advantage estimation
@@ -51,7 +53,7 @@ class PPOConfig:
     mini_batch_size = int(batch_size // num_mini_batch)
     
     # Pretrain arguments
-    use_pretrain: bool = True
+    use_pretrain: bool = False
     pretrain_model_path: str = "checkpoints/pretrained_model"
     pretrain_total_timesteps: int = int(5e6)
     pretrain_update_epoches: int = 4
