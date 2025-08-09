@@ -1,5 +1,5 @@
 import gymnasium as gym
-from env.minesweeper import MinesweeperEnv
+from src.env.minesweeper import MinesweeperEnv
 from gym.wrappers import RecordVideo, RecordEpisodeStatistics
 
 def make_env(env_config, seed, idx, capture_video=False, run_name=None):

@@ -3,7 +3,7 @@ import os, sys
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if src_path not in sys.path:
     sys.path.append(src_path)
-from models.base import MinesweeperSolver
+from algo.base import MinesweeperSolver
 import numpy as np
 import random
 from config.ppo_config import PPOConfig

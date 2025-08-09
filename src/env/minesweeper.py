@@ -4,7 +4,7 @@ import pygame
 import gymnasium as gym
 import time
 import os, tomli
-from models.logic import LogicSolver
+from src.algo.logic import LogicSolver
 
 def load_rewards_config():
     config_path = os.path.join(os.path.dirname(__file__), '../config/rewards.toml')
@@ -20,6 +20,9 @@ class MinesweeperEnv(gym.Env):
         num_mines = config.get('num_mines', 10)
         use_dfs = config.get('use_dfs', True)
         self.num_envs = config.get('num_envs', 1)
+        self.safe_center = config.get('safe_center', False)
+        self.first_click_safe = config.get('first_click_safe', True)
+        self.phase = config.get('phase', "test")
         
         self.width = width
         self.height = height
@@ -35,6 +38,7 @@ class MinesweeperEnv(gym.Env):
         self.use_dfs = use_dfs
         self.np_random = None
         self.current_seed = 0
+        self._true_board = None
         
         # variable to track information
         self.info = {
@@ -42,6 +46,7 @@ class MinesweeperEnv(gym.Env):
             'is_game_over': False,
             'action_mask': self.get_action_mask(),
             'revealed_cells': 0,
+            'full_board': None,  # will be set in reset()
         }
 
         # rewards configuration and relevant variables
@@ -88,7 +93,7 @@ class MinesweeperEnv(gym.Env):
         """Set seed for random number generators"""
         self.current_seed = seed
         
-    def reset(self, seed = None, **kwargs):
+    def reset(self, seed = None, safe_move = None, **kwargs):
         if seed is None:
             self.current_seed = self.current_seed + self.num_envs
             seed = self.current_seed
@@ -109,11 +114,14 @@ class MinesweeperEnv(gym.Env):
         
         # generate safe positions
         safe_positions = set()
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                new_x, new_y = center_x + dx, center_y + dy
-                if 0 <= new_x < self.width and 0 <= new_y < self.height:
-                    safe_positions.add((new_x, new_y))
+        if safe_move is not None:
+            safe_positions.add(safe_move)
+        if self.safe_center:
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    new_x, new_y = center_x + dx, center_y + dy
+                    if 0 <= new_x < self.width and 0 <= new_y < self.height:
+                        safe_positions.add((new_x, new_y))
         
         # generate mines
         mines_placed = 0
@@ -124,6 +132,8 @@ class MinesweeperEnv(gym.Env):
                 self.mines.add((x, y))
                 mines_placed += 1
         
+        self._true_board = self._build_true_board()
+        
         self.done = False
 
         self.solver = LogicSolver(self._dummy_envs)   # 新的空 solver
@@ -131,12 +141,22 @@ class MinesweeperEnv(gym.Env):
         U0 = self._compute_uncertainty()
         self._last_uncertainty = U0
 
-        return self.board.copy(), {'action_mask': self.get_action_mask()}
+        self.info.update({
+            "action_mask": self.get_action_mask(),
+            "full_board": self._true_board.copy(),
+        })
+
+        return self.board.copy(), self.info
     
     def step(self, action):
         x, y = action // self.height, action % self.height
 
         assert self.action_mask[action], 'Invalid action'
+        
+        if np.all(self.board == 10) and self.first_click_safe: # 第一次动作
+            if (x, y) in self.mines:
+                self.reset(seed=self.current_seed, safe_move = (x, y) ) # 重新开局
+                assert (x, y) not in self.mines, "First click should not be a mine"
 
         # ====== 动作前情报 ======
         U_before = self._last_uncertainty if self._last_uncertainty is not None else self._compute_uncertainty()
@@ -199,77 +219,6 @@ class MinesweeperEnv(gym.Env):
 
         reward = r_info + r_flood + r_logic + r_guess
         return obs, reward, self.done, False, self.info
-
-    def _update_mask_dfs(self, x, y):
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                if dx == 0 and dy == 0:
-                    continue
-                new_x, new_y = x + dx, y + dy
-                if (0 <= new_x < self.width and 
-                    0 <= new_y < self.height):
-                    action = new_x * self.height + new_y
-                    if self.action_mask[action]:
-                        self.action_mask[action] = False
-                        val = self.count_mines(new_x, new_y)
-                        self.board[new_x, new_y] = val
-                        self._solver_feed_cell(new_x, new_y, val)
-                        if val == 0:
-                            self._update_mask_dfs(new_x, new_y)
-
-    def _neighbors(self, x, y):
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                if dx == 0 and dy == 0:
-                    continue
-                new_x, new_y = x + dx, y + dy
-                if 0 <= new_x < self.width and 0 <= new_y < self.height:
-                    yield new_x, new_y
-
-    def _compute_uncertainty(self):
-        hidden_coords = list(zip(*np.where(self.board == 10)))
-        hidden = len(hidden_coords)
-        if hidden == 0:
-            return 0.0
-
-        total_mines = self.num_mines
-        revealed_mines = sum(1 for (x,y) in self.mines if self.board[x,y] == 9)
-        remaining_mines = max(0, total_mines - revealed_mines)
-
-        p_global = remaining_mines / hidden if hidden > 0 else 0.0
-
-        safe, mines = self._deducible_safe_and_mines()
-
-        def H(p):
-            if p <= 0.0 or p >= 1.0:
-                return 0.0
-            return -(p*np.log(p) + (1-p)*np.log(1-p))
-        U = 0.0
-        for c in hidden_coords:
-            if c in safe:
-                p = 0.0
-            elif c in mines:
-                p = 1.0
-            else:
-                p = p_global
-            U += H(p)
-        return float(U)
-    
-    def _solver_feed_cell(self, x, y, val):
-        """
-        把新揭开的数字格 (x,y,val) 喂给持久 solver。
-        只喂 0-8；9(踩雷) 不喂（游戏结束无意义）。
-        """
-        if val in range(0, 9):
-            if (x, y) not in self._fed_cells:
-                self.solver.add_knowledge(self._solver_env_idx, (x, y), int(val))
-                self._fed_cells.add((x, y))
-
-    def _deducible_safe_and_mines(self):
-        env_idx = self._solver_env_idx
-        safe = {(x,y) for (x,y) in self.solver.safes[env_idx] if self.board[x,y] == 10}
-        mines = {(x,y) for (x,y) in self.solver.mines[env_idx] if self.board[x,y] == 10}
-        return safe, mines
     
     def count_mines(self, x, y):
         count = 0
@@ -404,3 +353,81 @@ class MinesweeperEnv(gym.Env):
             
     def get_action_mask(self):
         return self.action_mask.copy()
+    
+    def _update_mask_dfs(self, x, y):
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                new_x, new_y = x + dx, y + dy
+                if (0 <= new_x < self.width and 
+                    0 <= new_y < self.height):
+                    action = new_x * self.height + new_y
+                    if self.action_mask[action]:
+                        self.action_mask[action] = False
+                        val = self.count_mines(new_x, new_y)
+                        self.board[new_x, new_y] = val
+                        self._solver_feed_cell(new_x, new_y, val)
+                        if val == 0:
+                            self._update_mask_dfs(new_x, new_y)
+
+    def _neighbors(self, x, y):
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                new_x, new_y = x + dx, y + dy
+                if 0 <= new_x < self.width and 0 <= new_y < self.height:
+                    yield new_x, new_y
+
+    def _compute_uncertainty(self):
+        hidden_coords = list(zip(*np.where(self.board == 10)))
+        hidden = len(hidden_coords)
+        if hidden == 0:
+            return 0.0
+
+        total_mines = self.num_mines
+        revealed_mines = sum(1 for (x,y) in self.mines if self.board[x,y] == 9)
+        remaining_mines = max(0, total_mines - revealed_mines)
+
+        p_global = remaining_mines / hidden if hidden > 0 else 0.0
+
+        safe, mines = self._deducible_safe_and_mines()
+
+        def H(p):
+            if p <= 0.0 or p >= 1.0:
+                return 0.0
+            return -(p*np.log(p) + (1-p)*np.log(1-p))
+        U = 0.0
+        for c in hidden_coords:
+            if c in safe:
+                p = 0.0
+            elif c in mines:
+                p = 1.0
+            else:
+                p = p_global
+            U += H(p)
+        return float(U)
+    
+    def _solver_feed_cell(self, x, y, val):
+        """
+        把新揭开的数字格 (x,y,val) 喂给持久 solver。
+        只喂 0-8；9(踩雷) 不喂（游戏结束无意义）。
+        """
+        if val in range(0, 9):
+            if (x, y) not in self._fed_cells:
+                self.solver.add_knowledge(self._solver_env_idx, (x, y), int(val))
+                self._fed_cells.add((x, y))
+
+    def _deducible_safe_and_mines(self):
+        env_idx = self._solver_env_idx
+        safe = {(x,y) for (x,y) in self.solver.safes[env_idx] if self.board[x,y] == 10}
+        mines = {(x,y) for (x,y) in self.solver.mines[env_idx] if self.board[x,y] == 10}
+        return safe, mines
+    
+    def _build_true_board(self):
+        b = np.zeros((self.width, self.height), dtype=int)
+        for x in range(self.width):
+            for y in range(self.height):
+                b[x, y] = 9 if (x, y) in self.mines else self.count_mines(x, y)
+        return b

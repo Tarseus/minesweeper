@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class PPOConfig:
     #Environment specific arguments
-    difficulty: str = "expert"
+    difficulty: str = "beginner"
     assert difficulty in ["beginner", "intermediate", "expert"]
     if difficulty == "beginner":
         width: int = 9
@@ -18,6 +18,8 @@ class PPOConfig:
         height: int = 16
         num_mines: int = 99
     use_dfs: bool = True
+    safe_center: bool = False # 中心点与其周围八个格子均不为雷
+    first_click_safe: bool = True # 第一次点击的格子不为雷
     
     # General arguments
     exp_name: str = "ms_ai_ppo_" + difficulty
@@ -28,13 +30,14 @@ class PPOConfig:
     cuda: bool = True # use cuda
     track: bool = True # track training with wandb
     wandb_project: str = "minesweeper_ppo"
-    capture_video: bool = True # capture video of agent playing
+    capture_video: bool = False # capture video of agent playing
     capture_video_freq: int = 1000
     save_freq: int = 1000 # save model every n updates
+    phase: str = "train" # "train" or "test"
     
     # Algorithm specific arguments
-    num_envs: int = 8
-    num_steps: int = 512
+    num_envs: int = 32
+    num_steps: int = 256
     anneal_lr: bool = True # toggle learning rate annealing
     gae: bool = True # toggle generalized advantage estimation
     gamma: float = 0.99 # discount factor
