@@ -25,12 +25,12 @@ class PPOConfig:
     exp_name: str = "ms_ai_ppo_" + difficulty
     learning_rate: float = 2.5e-4
     seed: int = 1
-    total_timesteps: int = int(5e7)
+    total_timesteps: int = int(6e7)
     torch_deterministic: bool = False # torch.backends.cudnn.deterministic
     cuda: bool = True # use cuda
     track: bool = True # track training with wandb
     wandb_project: str = "minesweeper_ppo"
-    capture_video: bool = False # capture video of agent playing
+    capture_video: bool = True # capture video of agent playing
     capture_video_freq: int = 1000
     save_freq: int = 1000 # save model every n updates
     phase: str = "train" # "train" or "test"
@@ -60,6 +60,7 @@ class PPOConfig:
     pretrain_model_path: str = "checkpoints/pretrained_model"
     pretrain_total_timesteps: int = 8_192_000   # int(5e6)
     pretrain_update_epoches: int = 4
+    test_model_path: str = "checkpoints/ppo_beginner.pth"
 
     def get(self, key, default):
         return getattr(self, key) if hasattr(self, key) else default

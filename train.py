@@ -12,7 +12,7 @@ from src.config import PPOConfig
 
 def train():
     config = PPOConfig()
-    run_name = config.exp_name
+    run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
     seed = config.seed
 
     random.seed(seed)
@@ -20,7 +20,7 @@ def train():
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = config.torch_deterministic
 
-    device = torch.device("cuda:1" if config.cuda and torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if config.cuda and torch.cuda.is_available() else "cpu")
 
     if run_name is None:
         run_name = f"{config.exp_name}_{seed}_{time.strftime('%d-%m-%Y_%H-%M-%S')}"
@@ -31,6 +31,7 @@ def train():
 
     H, W = envs.single_observation_space.shape
     model = CNNBased(obs_shape=(H, W)).to(device)
+    model = torch.compile(model, mode="max-autotune")
 
     writer = None
     wandb_run = None

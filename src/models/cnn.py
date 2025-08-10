@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+import numpy as np
 
 
 class SqueezeExcite(nn.Module):
@@ -141,20 +142,14 @@ class CNNBased(nn.Module):
 
         # mask illegal actions
         if action_mask is not None:
-            mask = torch.as_tensor(action_mask, dtype=torch.bool, device=device)
-            if mask.ndim == 1:
-                mask = mask.unsqueeze(0)
-            if mask.shape[0] != logits.shape[0]:
-                try:
-                    import numpy as _np
-                    mask = torch.as_tensor(_np.vstack(action_mask), dtype=torch.bool, device=device)
-                except Exception:
-                    raise ValueError("action_mask shape mismatch; expected (B,H*W)")
-            logits = logits.masked_fill(~mask, -1e20)
+            if not isinstance(action_mask, torch.Tensor):
+                raise TypeError("action_mask must be a torch.BoolTensor shaped (B,A) after refactor")
+            mask = action_mask
+            logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
 
         probs  = Categorical(logits=logits)
         action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy()
+        return action, probs, probs.entropy()
 
     def get_action_and_value(
         self,
@@ -179,26 +174,9 @@ class CNNBased(nn.Module):
         #             raise ValueError("action_mask shape mismatch; expected (B,H*W)")
         #     logits = logits.masked_fill(~mask, -1e20)
         if action_mask is not None:
-            import numpy as _np
-            arr = action_mask
-            if isinstance(arr, (list, tuple)):
-                arr = _np.array([_np.asarray(m, dtype=bool).reshape(-1) for m in arr], dtype=bool)
-            else:
-                arr = _np.asarray(arr)
-                if arr.dtype == object:
-                    arr = _np.vstack([_np.asarray(m, dtype=bool).reshape(-1) for m in arr])
-                else:
-                    arr = arr.astype(bool)
-            mask = torch.as_tensor(arr, dtype=torch.bool, device=device)
-            if mask.ndim == 1:
-                if logits.shape[0] > 1:
-                    mask = mask.unsqueeze(0).expand(logits.shape[0], -1)
-                else:
-                    mask = mask.unsqueeze(0)
-            if mask.shape[0] != logits.shape[0]:
-                raise ValueError(f"action_mask batch mismatch: {mask.shape[0]} vs {logits.shape[0]}")
-            if mask.shape[1] != logits.shape[1]:
-                raise ValueError(f"action_mask action-dim mismatch: {mask.shape[1]} vs {logits.shape[1]}")
+            if not isinstance(action_mask, torch.Tensor):
+                raise TypeError("action_mask must be a torch.BoolTensor shaped (B,A) after refactor")
+            mask = action_mask
             logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
 
         probs = Categorical(logits=logits)

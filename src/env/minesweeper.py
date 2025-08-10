@@ -151,7 +151,13 @@ class MinesweeperEnv(gym.Env):
     def step(self, action):
         x, y = action // self.height, action % self.height
 
-        assert self.action_mask[action], 'Invalid action'
+        # assert self.action_mask[action], 'Invalid action'
+        print(f"Action {action}.")
+        print(f"Current action mask: {self.action_mask}")
+        if not self.action_mask[action]:
+            # print(f"Action {action} is masked, cannot step.")
+            # print(f"Current action mask: {self.action_mask}")
+            exit()
         
         if np.all(self.board == 10) and self.first_click_safe: # 第一次动作
             if (x, y) in self.mines:
@@ -227,126 +233,226 @@ class MinesweeperEnv(gym.Env):
                 count += 1
         return count
                             
-    def render(self, mode="rgb_array"):
+    def render(self, mode="rgb_array", probs=None, action=None, show_prob_text=True):
         """
-        mode: 'rgb_array' | 'pygame' | 'human' | 'print'
-        - rgb_array: 离屏渲染，返回(H, W, 3) numpy
-        - pygame/human: 开窗渲染，同时返回帧；若窗口被关，返回 None
-        - print: 控制台打印棋盘
+        mode: 'rgb_array' | 'human' | 'print'
+        - rgb_array: 返回(H, W, 3) 或 (H, 2*W+gap, 3) 的 numpy.uint8（取决于 probs 是否传入）
+        - human: 用 matplotlib 弹窗显示（可选）
+        - print: 控制台打印
+        probs: 概率，支持 shape:
+            - (width*height,)  一维扁平；索引 i -> (x=i//H, y=i%H)
+            - (width, height)  或 (height, width)
+        action: 可选；若提供则高亮该格子；否则默认高亮 probs 的 argmax
+        show_prob_text: 是否在热力图上叠加数值文本
         """
-        import pygame, os
+        import numpy as np
+        import matplotlib
+        matplotlib.use("Agg", force=True)
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+        from matplotlib.patches import Rectangle, Circle
+
         mode = (mode or getattr(self, "render_mode", "rgb_array")).lower()
 
-        # ---------- helpers ----------
-        def _ensure_pygame():
-            if not pygame.get_init():
-                pygame.init()
-            if not pygame.font.get_init():
-                pygame.font.init()
-            # 确保有字体
-            if getattr(self, "font", None) is None:
-                # 字体大小给点边距
-                size = max(12, self.cell_size - 4)
-                self.font = pygame.font.SysFont(None, size)
-            # 控帧器
-            if getattr(self, "clock", None) is None:
-                self.clock = pygame.time.Clock()
+        W_cell = self.cell_size * self.width
+        H_cell = self.cell_size * self.height
+        gap = max(4, self.cell_size // 2)  # 左右之间的间隙像素
 
-        def _draw(surface):
-            # 背景
-            surface.fill(self.colors['bg'])
-            # 网格
+        def _rgb255_to_1(col):
+            return tuple(np.array(col, dtype=float) / 255.0)
+
+        # --------- 解析 probs 成 (H, W) 的热力图矩阵（行=y, 列=x）---------
+        heat = None
+        if probs is not None:
+            p = np.asarray(probs)
+            if p.ndim == 1:
+                if p.size != self.width * self.height:
+                    raise ValueError(f"Flat probs 大小应为 width*height={self.width*self.height}，但得到 {p.size}")
+                # 你给的映射：x = i // H, y = i % H
+                grid_x_y = p.reshape((self.width, self.height))  # (W,H)
+                heat = grid_x_y.T  # -> (H,W)
+            elif p.ndim == 2:
+                if p.shape == (self.width, self.height):
+                    heat = p.T
+                elif p.shape == (self.height, self.width):
+                    heat = p
+                else:
+                    raise ValueError(f"二维 probs 形状需为 (W,H) 或 (H,W)，但得到 {p.shape}")
+            else:
+                raise ValueError("probs 应为 1D 或 2D 数组")
+
+        # --------- 选择画布布局（单画面或双画面）---------
+        two_panels = heat is not None
+        if two_panels:
+            TOT_W, TOT_H = W_cell * 2 + gap, H_cell
+        else:
+            TOT_W, TOT_H = W_cell, H_cell
+
+        # --------- mpl 缓存（双画面和单画面分开缓存）---------
+        cache_attr = "_mpl_cache_dual" if two_panels else "_mpl_cache_single"
+        cache = getattr(self, cache_attr, None)
+        if cache is None or cache.get("TOT_W") != TOT_W or cache.get("TOT_H") != TOT_H:
+            dpi = 100
+            fig = Figure(figsize=(TOT_W / dpi, TOT_H / dpi), dpi=dpi)
+            canvas = FigureCanvas(fig)
+            axes = {}
+            if two_panels:
+                # 左轴
+                axes["L"] = fig.add_axes([0, 0, W_cell / TOT_W, 1])
+                # 右轴
+                axes["R"] = fig.add_axes([(W_cell + gap) / TOT_W, 0, W_cell / TOT_W, 1])
+                for ax in (axes["L"], axes["R"]):
+                    ax.set_xlim(0, W_cell)
+                    ax.set_ylim(H_cell, 0)   # y 轴向下
+                    ax.axis("off")
+            else:
+                axes["L"] = fig.add_axes([0, 0, 1, 1])
+                axes["L"].set_xlim(0, W_cell)
+                axes["L"].set_ylim(H_cell, 0)
+                axes["L"].axis("off")
+
+            cache = {"fig": fig, "canvas": canvas, "axes": axes, "TOT_W": TOT_W, "TOT_H": TOT_H}
+            setattr(self, cache_attr, cache)
+
+        fig, canvas, axes = cache["fig"], cache["canvas"], cache["axes"]
+        axL = axes["L"]
+        if two_panels:
+            axR = axes["R"]
+
+        # --------- 绘制左侧：标准棋盘 ---------
+        axL.clear()
+        axL.set_xlim(0, W_cell)
+        axL.set_ylim(H_cell, 0)
+        axL.axis("off")
+
+        # 背景
+        axL.add_patch(Rectangle((0, 0), W_cell, H_cell,
+                                facecolor=_rgb255_to_1(self.colors["bg"]), edgecolor=None))
+
+        # 单元格
+        for y in range(self.height):
+            for x in range(self.width):
+                x0 = x * self.cell_size
+                y0 = y * self.cell_size
+                v = int(self.board[x, y])
+
+                if v == 10:  # 未知
+                    axL.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
+                                            facecolor=_rgb255_to_1(self.colors["unknown"]), edgecolor=None))
+                elif v == 9:  # 地雷
+                    cx, cy = x0 + self.cell_size / 2.0, y0 + self.cell_size / 2.0
+                    r = max(2, self.cell_size // 3)
+                    axL.add_patch(Circle((cx, cy), r, color=_rgb255_to_1(self.colors["mine"])))
+                else:
+                    if v != 0:
+                        cx, cy = x0 + self.cell_size / 2.0, y0 + self.cell_size / 2.0
+                        col = _rgb255_to_1(self.colors["numbers"][v])
+                        axL.text(cx, cy, str(v), ha="center", va="center",
+                                color=col, fontsize=self.cell_size * 0.6,
+                                family="DejaVu Sans", weight="bold")
+
+                # 网格
+                axL.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
+                                        fill=False, linewidth=1, edgecolor=_rgb255_to_1(self.colors["grid"])))
+
+        # --------- 绘制右侧：概率热力图 ---------
+        target_xy = None
+        if two_panels:
+            axR.clear()
+            axR.set_xlim(0, W_cell)
+            axR.set_ylim(H_cell, 0)
+            axR.axis("off")
+
+            # 颜色映射范围
+            vmin = float(np.nanmin(heat)) if np.isfinite(heat).any() else 0.0
+            vmax = float(np.nanmax(heat)) if np.isfinite(heat).any() else 1.0
+            if vmax <= vmin:
+                vmax = vmin + 1e-6
+
+            # 画热力图（把 (H,W) 直接 imshow 到右轴；origin='upper' 与 y 轴向下一致）
+            im = axR.imshow(
+                heat,
+                origin="upper",
+                extent=(0, W_cell, H_cell, 0),  # (left, right, top, bottom) 注意我们 y 轴是倒的
+                cmap="viridis",
+                vmin=vmin,
+                vmax=vmax,
+                interpolation="nearest",
+            )
+
+            # 网格叠加
             for y in range(self.height):
                 for x in range(self.width):
-                    rect = pygame.Rect(
-                        x * self.cell_size,
-                        y * self.cell_size,
-                        self.cell_size,
-                        self.cell_size
-                    )
-                    cell_value = int(self.board[x, y])
+                    x0, y0 = x * self.cell_size, y * self.cell_size
+                    axR.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
+                                            fill=False, linewidth=1, edgecolor=_rgb255_to_1(self.colors["grid"])))
 
-                    if cell_value == 10:
-                        # 未知
-                        pygame.draw.rect(surface, self.colors['unknown'], rect)
-                    elif cell_value == 9:
-                        # 地雷
-                        pygame.draw.circle(
-                            surface,
-                            self.colors['mine'],
-                            (x * self.cell_size + self.cell_size // 2,
-                            y * self.cell_size + self.cell_size // 2),
-                            max(2, self.cell_size // 3)
-                        )
-                    else:
-                        # 数字；0 就别画字了，直接空白
-                        if cell_value != 0:
-                            color = self.colors['numbers'][cell_value]
-                            txt = self.font.render(str(cell_value), True, color)
-                            txt_rect = txt.get_rect(center=(
-                                x * self.cell_size + self.cell_size // 2,
-                                y * self.cell_size + self.cell_size // 2
-                            ))
-                            surface.blit(txt, txt_rect)
+            # 在热力图上叠加数值（可选）
+            if show_prob_text:
+                mid = 0.5 * (vmin + vmax)
+                for y in range(self.height):
+                    for x in range(self.width):
+                        val = float(heat[y, x])
+                        cx, cy = x * self.cell_size + self.cell_size / 2.0, y * self.cell_size + self.cell_size / 2.0
+                        # 根据深浅选择黑/白
+                        txt_color = (1, 1, 1) if val >= mid else (0, 0, 0)
+                        axR.text(cx, cy, f"{val:.2f}", ha="center", va="center",
+                                color=txt_color, fontsize=max(8, self.cell_size * 0.35),
+                                family="DejaVu Sans")
 
-                    # 画边框
-                    pygame.draw.rect(surface, self.colors['grid'], rect, 1)
+            # 计算需要高亮的格子（优先使用 action，否则取 probs 的 argmax）
+            if action is not None:
+                ax_idx = int(action)
+            else:
+                ax_idx = int(np.nanargmax(heat)) if np.isfinite(heat).any() else None
+                if ax_idx is not None:
+                    # heat 是 (H,W)，其 argmax 对应 (y,x)
+                    y = ax_idx // self.width
+                    x = ax_idx % self.width
+                    # 但用户给的 action -> (x,y) 是 i // H, i % H，若需要把 (x,y) 转回 action：
+                    # action = x * self.height + y
+                    ax_idx = x * self.height + y  # 让左右两侧一致用 action 编码
 
-        # ---------- modes ----------
-        if mode == 'print':
+            if ax_idx is not None:
+                # 用你给的规则把 action -> (x,y)
+                x_sel = ax_idx // self.height
+                y_sel = ax_idx % self.height
+                target_xy = (x_sel, y_sel)
+
+                # 左右两侧都高亮该格子
+                for _ax in (axL, axR):
+                    x0, y0 = x_sel * self.cell_size, y_sel * self.cell_size
+                    _ax.add_patch(Rectangle(
+                        (x0, y0), self.cell_size, self.cell_size,
+                        fill=False, linewidth=2.5, edgecolor=(1.0, 1.0, 0.0)  # 黄色
+                    ))
+
+        # --------- 输出 ----------
+        canvas.draw()
+        w, h = canvas.get_width_height()
+        rgba = np.asarray(canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+        frame = rgba[..., :3].copy()
+
+        if mode == "print":
             for y in range(self.height):
                 row = []
                 for x in range(self.width):
                     v = int(self.board[x, y])
                     row.append('.' if v == 10 else ('*' if v == 9 else str(v)))
-                print(' '.join(row))
-            return self.board.copy()
+                print(" ".join(row))
+            return getattr(self, "board", None).copy()
 
-        if mode in ('rgb_array',):
-            _ensure_pygame()
-            # 离屏 surface
-            w, h = self.screen_width, self.screen_height
-            surf = pygame.Surface((w, h))
-            _draw(surf)
-            frame = pygame.surfarray.array3d(surf).swapaxes(0, 1)  # (H, W, 3)
-            # 控制渲染帧率（可选）：默认 30fps
-            self.clock.tick(getattr(self, "render_fps", 30))
+        if mode == "human":
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.imshow(frame)
+            plt.axis("off")
+            plt.show(block=False)
             return frame
 
-        if mode in ('human', 'pygame'):
-            _ensure_pygame()
-            # 若 display 被关/未建，重建窗口
-            if not pygame.display.get_init() or getattr(self, "screen", None) is None:
-                pygame.display.init()
-                self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-                pygame.display.set_caption('Minesweeper')
+        return frame  # 'rgb_array'
 
-            # 处理事件；用户点 X 就优雅退出窗口，并返回 None
-            quit_now = False
-            for e in pygame.event.get():
-                if e.type == pygame.QUIT:
-                    quit_now = True
-            if quit_now:
-                pygame.display.quit()
-                self.screen = None
-                return None
-
-            if self.screen is None or not pygame.display.get_init():
-                return None
-            try:
-                _draw(self.screen)
-            except pygame.error:
-                # Surface 已经 quit，不能再画
-                self.screen = None
-                return None
-            pygame.display.flip()
-            frame = pygame.surfarray.array3d(self.screen).swapaxes(0, 1)
-            self.clock.tick(getattr(self, "render_fps", 30))
-            return frame
-
-        raise ValueError(f"Unsupported render mode: {mode}")
-
-    
+        
     def close(self):
         if self.screen is not None:
             pygame.quit()
@@ -360,16 +466,22 @@ class MinesweeperEnv(gym.Env):
                 if dx == 0 and dy == 0:
                     continue
                 new_x, new_y = x + dx, y + dy
-                if (0 <= new_x < self.width and 
-                    0 <= new_y < self.height):
-                    action = new_x * self.height + new_y
-                    if self.action_mask[action]:
-                        self.action_mask[action] = False
-                        val = self.count_mines(new_x, new_y)
-                        self.board[new_x, new_y] = val
-                        self._solver_feed_cell(new_x, new_y, val)
-                        if val == 0:
-                            self._update_mask_dfs(new_x, new_y)
+                if not (0 <= new_x < self.width and 0 <= new_y < self.height):
+                    continue
+
+                if (new_x, new_y) in self.mines:
+                    continue
+                action = new_x * self.height + new_y
+                if not self.action_mask[action]:
+                    continue  # 已经揭开过
+
+                self.action_mask[action] = False
+                val = self.count_mines(new_x, new_y)
+                self.board[new_x, new_y] = val
+                self._solver_feed_cell(new_x, new_y, val)
+
+                if val == 0:
+                    self._update_mask_dfs(new_x, new_y)
 
     def _neighbors(self, x, y):
         for dx in [-1, 0, 1]:

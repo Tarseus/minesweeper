@@ -24,6 +24,8 @@ def format_seconds(seconds: float) -> str:
 class TrainState:
     global_step: int = 0
     win_rate: float = 0.0
+    episodic_return: float = 0.0
+    episodic_length: float = 0.0
 
 
 class PPO:
@@ -77,11 +79,15 @@ class PPO:
 
         next_done = torch.zeros(cfg.num_envs, device=device)
         obs_np, info = self.envs.reset()
-        action_masks = info.get("action_mask")
+        B = obs_np.shape[0]
+        A = self.envs.single_action_space.n
+        action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
         next_obs = torch.as_tensor(obs_np, device=device)
 
         final_info_seen = 0
         total_win = 0
+        total_return = 0.0
+        total_length = 0
 
         for step in range(cfg.num_steps):
             self.state.global_step += cfg.num_envs
@@ -98,12 +104,12 @@ class PPO:
             self.logprobs[step] = logprob
 
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action.cpu().numpy())
-            action_masks = info.get("action_mask")
+            action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
             done = np.logical_or(terminated, truncated)
 
             self.rewards[step] = torch.as_tensor(reward, device=device).view(-1)
             next_obs = torch.as_tensor(next_obs_np, device=device)
-            next_done = torch.as_tensor(done, device=device)
+            next_done = torch.as_tensor(done, device=device, dtype=self.rewards.dtype)
 
             if "final_info" in info:
                 for item in info["final_info"]:
@@ -111,12 +117,16 @@ class PPO:
                         final_info_seen += 1
                         if item.get("is_success", False):
                             total_win += 1
-                        if self.writer is not None:
-                            self.writer.add_scalar("charts/episodic_return", item["episode"]["r"], self.state.global_step)
-                            self.writer.add_scalar("charts/episodic_length", item["episode"]["l"], self.state.global_step)
-
+                        if item.get("episode") is not None:
+                            total_return += item["episode"]["r"]
+                            total_length += item["episode"]["l"]
+                            
         win_rate = (total_win / final_info_seen) if final_info_seen > 0 else self.state.win_rate
+        episodic_return = total_return / final_info_seen if final_info_seen > 0 else 0.0
+        episodic_length = total_length / final_info_seen if final_info_seen > 0 else 0.0
         self.state.win_rate = win_rate
+        self.state.episodic_return = episodic_return
+        self.state.episodic_length = episodic_length
 
         with torch.no_grad():
             next_value = self.model.get_value(next_obs).reshape(1, -1)
@@ -131,6 +141,8 @@ class PPO:
     def compute_advantages(self, next_done, next_value):
         cfg = self.config
         rewards, values, dones = self.rewards, self.values, self.dones
+        next_done = next_done.to(dtype=rewards.dtype)
+        dones = dones.to(dtype=rewards.dtype)
 
         if cfg.gae:
             advantages = torch.zeros_like(rewards, device=self.device)
@@ -297,6 +309,7 @@ class PPO:
                 f"Value Loss: {stats['v_loss']:.3f} | Policy Loss: {stats['pg_loss']:.3f} | "
                 f"Entropy: {stats['entropy']:.3f} | Var: {stats['explained_var']:.3f} | "
                 f"SPS: {sps} | Win Rate: {self.state.win_rate:.3f} | "
+                f"Episodic Return: {self.state.episodic_return:.1f} | Episodic Length: {self.state.episodic_length:.1f} | "
                 f"ETA: {format_seconds(remaining)}"
             )
 
@@ -311,32 +324,12 @@ class PPO:
                 self.writer.add_scalar("losses/explained_variance", stats['explained_var'], self.state.global_step)
                 self.writer.add_scalar("charts/SPS", sps, self.state.global_step)
                 self.writer.add_scalar("charts/win_rate", self.state.win_rate, self.state.global_step)
+                self.writer.add_scalar("charts/episodic_return", self.state.episodic_return, self.state.global_step)
+                self.writer.add_scalar("charts/episodic_length", self.state.episodic_length, self.state.global_step)
+                
 
             self.maybe_eval_and_save(update)
-
-    def test(self):
-        """
-        Run the model in evaluation mode.
-        This method is for testing the trained model on a single environment.
-        """
-        cfg = self.config
-        device = self.device
-        env = self.envs.single_env()
-        obs, info = env.reset()
-        next_obs = torch.as_tensor(obs, device=device).unsqueeze(0)
-        action_masks = info.get("action_mask")
-
-        while True:
-            action, _, _, _ = self.model.get_action_and_value(next_obs, action_mask=action_masks)
-            obs2, reward, terminated, truncated, info = env.step(action[0].cpu().numpy())
-            action_masks = info.get("action_mask")
-            done = np.logical_or(terminated, truncated)
-            if done:
-                break
-            next_obs = torch.as_tensor(obs2, device=device).unsqueeze(0)
-
-        env.close()
-
+        
     # ------------------------ helpers ------------------------
     def save(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -344,3 +337,22 @@ class PPO:
 
     def load(self, path: str):
         self.model.load_state_dict(torch.load(path, map_location=self.device))
+
+    def _norm_mask(self, action_mask, B: int, A: int, device):
+        if isinstance(action_mask, torch.Tensor):
+            m = action_mask.to(device=device, dtype=torch.bool)
+        else:
+            arr = action_mask
+            if isinstance(arr, (list, tuple)):
+                arr = np.array([np.asarray(m, dtype=bool).reshape(-1) for m in arr], dtype=bool)
+            else:
+                arr = np.asarray(arr)
+                if arr.dtype == object:
+                    arr = np.vstack([np.asarray(m, dtype=bool).reshape(-1) for m in arr])
+                else:
+                    arr = arr.astype(bool)
+            m = torch.as_tensor(arr, dtype=torch.bool, device=device)
+        if m.ndim == 1:
+            m = m.unsqueeze(0).expand(B, -1)
+        assert m.shape == (B, A), f"mask shape {m.shape} != {(B,A)}"
+        return m

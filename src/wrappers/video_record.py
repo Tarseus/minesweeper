@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 from datetime import datetime
 import os
+import torch
 
 class VideoRecoder:
     def __init__(
@@ -84,11 +85,13 @@ class VideoRecorderWrapper(gym.Wrapper):
         self.recorder = VideoRecoder(self.videos_dir, self.fps, name_prefix, self.if_save_frames)
         return self.env.reset(**kwargs)
     
-    def step(self, action):
+    def step(self, action, probs=None):
         obs, reward, done, is_win, info = self.env.step(action)
         
         if self.recording:
-            frame = self.env.render(mode='pygame')
+            probs = probs.cpu().detach().numpy() if isinstance(probs, torch.Tensor) else probs
+            action = action.cpu().detach().numpy() if isinstance(action, torch.Tensor) else action
+            frame = self.env.render(mode='pygame', probs=probs, action=action)
             self.recorder.record_frame(frame)
             self.recorded_frames += 1
             if done:
