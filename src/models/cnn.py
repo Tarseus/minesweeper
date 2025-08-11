@@ -136,6 +136,7 @@ class CNNBased(nn.Module):
         self,
         x: torch.Tensor,
         action_mask: Optional[object] = None,
+        decode_type: str = "sample",
     ):
         device = x.device
         logits, _ = self.forward(x, full_board=None)  # policy 从不看 full_board
@@ -148,8 +149,11 @@ class CNNBased(nn.Module):
             logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
 
         probs  = Categorical(logits=logits)
-        action = probs.sample()
-        return action, probs, probs.entropy()
+        if decode_type == "greedy":
+            action = torch.argmax(probs.probs, dim=1)
+        else:
+            action = probs.sample()
+        return action, probs.probs, probs.entropy()
 
     def get_action_and_value(
         self,

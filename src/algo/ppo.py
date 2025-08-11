@@ -262,6 +262,136 @@ class PPO:
             self.evaluate_video(prefix=f"val_{self.state.global_step}")
 
     @torch.no_grad()
+    def evaluate_n_episodes(self, total_episodes: int = 100_000, prefix: str = "test"):
+        """
+        用现有的 self.envs（向量环境，自动 reset done 的那种）评测 total_episodes 局。
+        返回：
+            {
+            "win_rate": float,
+            "wins": np.ndarray[bool, total_episodes],
+            "returns": np.ndarray[float32, total_episodes],
+            "lengths": np.ndarray[int32, total_episodes],
+            }
+        """
+        device = self.device
+        envs = self.envs
+
+        # ---- reset &基本信息 ----
+        obs_np, info = envs.reset()
+        B = obs_np.shape[0]
+        A = envs.single_action_space.n
+        obs = torch.as_tensor(obs_np, device=device)
+        action_masks = self._norm_mask(info["action_mask"], B, A, device)
+
+        # ---- 结果缓冲区（若想省内存可用 np.memmap 落盘）----
+        wins    = np.zeros(total_episodes, dtype=bool)
+        returns = np.zeros(total_episodes, dtype=np.float32)
+        lengths = np.zeros(total_episodes, dtype=np.int32)
+        # 示例：用 memmap
+        # wins    = np.memmap("wins.bool",    mode="w+", dtype=bool,     shape=(total_episodes,))
+        # returns = np.memmap("returns.f32",  mode="w+", dtype=np.float32, shape=(total_episodes,))
+        # lengths = np.memmap("lengths.i32",  mode="w+", dtype=np.int32,   shape=(total_episodes,))
+
+        # 若环境不提供 episode 统计，这两条作为兜底在线累计
+        run_ret = np.zeros(B, dtype=np.float32)
+        run_len = np.zeros(B, dtype=np.int32)
+
+        finished = 0  # 已完成的局数
+        ptr = 0       # 写入结果数组的游标
+
+        def _get_success(fi: dict) -> bool:
+            # 兼容多种 key
+            for k in ("is_success", "success", "won", "win"):
+                if k in fi:
+                    return bool(fi[k])
+            return False
+
+        while finished < total_episodes:
+            # 前向选择动作（贪心/你模型默认策略）
+            action, logprob, _, value = self.model.get_action_and_value(
+                obs, action_mask=action_masks
+            )
+
+            # 环境前进一步（大多数向量 env 会对 done 的实例自动 reset）
+            next_obs_np, reward, terminated, truncated, info = envs.step(action.detach().cpu().numpy())
+            done = np.logical_or(terminated, truncated)
+
+            # 兜底的在线累计
+            r = np.asarray(reward, dtype=np.float32).reshape(-1)
+            run_ret += r
+            run_len += 1
+
+            # 准备下一步
+            obs = torch.as_tensor(next_obs_np, device=device)
+            action_masks = self._norm_mask(info["action_mask"], B, A, device)
+
+            # 读取刚刚完成的 episode（Gymnasium VectorEnv 会在 final_info 里给）
+            if "final_info" in info:
+                for i, fi in enumerate(info["final_info"]):
+                    if fi is None:
+                        continue
+
+                    succ = _get_success(fi)
+                    if fi.get("episode") is not None:
+                        ep_r = float(fi["episode"]["r"])
+                        ep_l = int(fi["episode"]["l"])
+                    else:
+                        # 没有 episode 统计就用兜底的累计
+                        ep_r = float(run_ret[i])
+                        ep_l = int(run_len[i])
+
+                    if ptr < total_episodes:
+                        wins[ptr]    = succ
+                        returns[ptr] = ep_r
+                        lengths[ptr] = ep_l
+                        ptr += 1
+                        finished += 1
+
+                    # 清零该环境的在线累计，为下一局做准备
+                    run_ret[i] = 0.0
+                    run_len[i] = 0
+
+            else:
+                # 退化路径：没有 final_info，就用 done 标志 & info 里的 success 数组
+                # （你的栈里大概率用不到这个分支）
+                succ_arr = None
+                for k in ("is_success", "success", "won", "win"):
+                    if k in info:
+                        succ_arr = np.asarray(info[k])
+                        break
+                for i, d in enumerate(done):
+                    if not d:
+                        continue
+                    succ = bool(succ_arr[i]) if succ_arr is not None else False
+                    ep_r = float(run_ret[i])
+                    ep_l = int(run_len[i])
+                    if ptr < total_episodes:
+                        wins[ptr]    = succ
+                        returns[ptr] = ep_r
+                        lengths[ptr] = ep_l
+                        ptr += 1
+                        finished += 1
+                    run_ret[i] = 0.0
+                    run_len[i] = 0
+
+            # 轻量进度打印（每完成 ~10 批并行 env 或收尾时）
+            if finished and (finished % (10 * B) == 0 or finished >= total_episodes):
+                print(f"[{prefix}] finished={finished}/{total_episodes}  "
+                    f"win_rate={wins[:ptr].mean():.3f}")
+
+        # 汇总
+        out = {
+            "win_rate": float(wins.mean()),
+            "wins": wins,
+            "returns": returns,
+            "lengths": lengths,
+        }
+        print(f"[{prefix}] done. win_rate={out['win_rate']:.4f}, "
+            f"avg_return={returns.mean():.3f}, avg_length={lengths.mean():.2f}")
+        return out
+
+
+    @torch.no_grad()
     def evaluate_video(self, prefix: str = "val"):
         cfg = self.config
         device = self.device
@@ -269,18 +399,23 @@ class PPO:
         if self.video_wrapper_cls is not None and not isinstance(env, self.video_wrapper_cls):
             # assume already wrapped outside; keep it simple here
             pass
-        obs, info = env.reset(name_prefix=prefix) if hasattr(env, "reset") else env.reset()
+        obs, info = env.reset()
+        B = 1
+        A = self.envs.single_action_space.n
         next_obs = torch.as_tensor(obs, device=device).unsqueeze(0)
-        action_masks = [info.get("action_mask")] if isinstance(info.get("action_mask"), np.ndarray) else info.get("action_mask")
+        # print(info["action_mask"].shape)
+        action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
         while True:
-            action, _, _, _ = self.model.get_action_and_value(next_obs, action_mask=action_masks)
-            obs2, reward, terminated, truncated, info = env.step(action[0].cpu().numpy())
+            action, probs, entropy  = self.model.get_action(next_obs, action_mask=action_masks, decode_type="greedy")
+            obs2, reward, terminated, truncated, info = env.step(action.cpu().numpy(), probs=probs.squeeze().cpu().detach().numpy())
             action_masks = [info.get("action_mask")] if isinstance(info.get("action_mask"), np.ndarray) else info.get("action_mask")
+            action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
             done = np.logical_or(terminated, truncated)
             if done:
                 break
             next_obs = torch.as_tensor(obs2, device=device).unsqueeze(0)
         time.sleep(0.5)
+        print(f"Evaluation finished for {prefix}.")
         env.close()
 
     # ------------------------ training loop ------------------------

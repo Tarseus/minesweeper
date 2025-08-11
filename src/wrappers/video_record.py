@@ -5,6 +5,18 @@ from datetime import datetime
 import os
 import torch
 
+def _to_scalar_action(self, action):
+    import numpy as np
+    try:
+        import torch
+        if isinstance(action, torch.Tensor):
+            action = action.detach().cpu().numpy()
+    except Exception:
+        pass
+    if isinstance(action, np.ndarray):
+        return int(action.reshape(-1)[0])
+    return int(action)
+
 class VideoRecoder:
     def __init__(
         self,
@@ -86,16 +98,15 @@ class VideoRecorderWrapper(gym.Wrapper):
         return self.env.reset(**kwargs)
     
     def step(self, action, probs=None):
+        action = _to_scalar_action(self, action)
         obs, reward, done, is_win, info = self.env.step(action)
         
         if self.recording:
-            probs = probs.cpu().detach().numpy() if isinstance(probs, torch.Tensor) else probs
-            action = action.cpu().detach().numpy() if isinstance(action, torch.Tensor) else action
-            frame = self.env.render(mode='pygame', probs=probs, action=action)
+            frame = self.env.render(mode='rgb_array', probs=probs, action=action)
             self.recorder.record_frame(frame)
             self.recorded_frames += 1
             if done:
-                frame = self.env.render(mode='pygame')
+                frame = self.env.render(mode='rgb_array', probs=probs, action=action)
                 if frame is not None:
                     self.recorder.record_last_frame(frame)
                 else:

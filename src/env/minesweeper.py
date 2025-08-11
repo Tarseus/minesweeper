@@ -37,7 +37,7 @@ class MinesweeperEnv(gym.Env):
         self.action_mask = np.ones(width * height, dtype=bool)
         self.use_dfs = use_dfs
         self.np_random = None
-        self.current_seed = 0
+        self.current_seed = config.get('seed', 0)
         self._true_board = None
         
         # variable to track information
@@ -63,31 +63,6 @@ class MinesweeperEnv(gym.Env):
         self.solver = LogicSolver(self._dummy_envs)  # 持久化
         self._solver_env_idx = 0
         self._fed_cells = set()  # 记录已经喂过的数字格，避免重复 add_knowledge
-
-        # pygame settings
-        self.cell_size = 41
-        self.screen_width = self.width * self.cell_size
-        self.screen_height = self.height * self.cell_size
-        self.screen = None
-        self.colors = {
-            'bg': (192, 192, 192), # background color: light gray
-            'grid': (128, 128, 128), # grid line color: gray
-            'unknown': (160, 160, 160), # unknown cell color: light gray
-            'mine': (255, 0, 0), # mine color: red
-            'numbers': [
-                (192, 192, 192), # 0: light gray
-                (0, 0, 255), # 1: blue
-                (0, 128, 0), # 2: green
-                (255, 0, 0), # 3: red
-                (0, 0, 128), # 4: dark blue
-                (128, 0, 0), # 5: dark red
-                (0, 128, 128), # 6: cyan
-                (0, 0, 0), # 7: black
-                (128, 128, 128) # 8: gray
-            ]
-        }
-        pygame.font.init()
-        self.font = pygame.font.SysFont('Arial', 36)
         
     def seed(self, seed=None):
         """Set seed for random number generators"""
@@ -151,14 +126,8 @@ class MinesweeperEnv(gym.Env):
     def step(self, action):
         x, y = action // self.height, action % self.height
 
-        # assert self.action_mask[action], 'Invalid action'
-        print(f"Action {action}.")
-        print(f"Current action mask: {self.action_mask}")
-        if not self.action_mask[action]:
-            # print(f"Action {action} is masked, cannot step.")
-            # print(f"Current action mask: {self.action_mask}")
-            exit()
-        
+        assert self.action_mask[action], 'Invalid action'
+                
         if np.all(self.board == 10) and self.first_click_safe: # 第一次动作
             if (x, y) in self.mines:
                 self.reset(seed=self.current_seed, safe_move = (x, y) ) # 重新开局
@@ -233,17 +202,14 @@ class MinesweeperEnv(gym.Env):
                 count += 1
         return count
                             
-    def render(self, mode="rgb_array", probs=None, action=None, show_prob_text=True):
+    def render(self, mode="rgb_array", probs=None, action=None,
+           show_prob_text=True, number_text_scale=0.50, prob_text_scale=0.28,
+           include_cbar=True):
         """
-        mode: 'rgb_array' | 'human' | 'print'
-        - rgb_array: 返回(H, W, 3) 或 (H, 2*W+gap, 3) 的 numpy.uint8（取决于 probs 是否传入）
-        - human: 用 matplotlib 弹窗显示（可选）
-        - print: 控制台打印
-        probs: 概率，支持 shape:
-            - (width*height,)  一维扁平；索引 i -> (x=i//H, y=i%H)
-            - (width, height)  或 (height, width)
-        action: 可选；若提供则高亮该格子；否则默认高亮 probs 的 argmax
-        show_prob_text: 是否在热力图上叠加数值文本
+        新增:
+        - number_text_scale: 左侧棋盘数字字号比例 (相对 cell_size)
+        - prob_text_scale:   右侧热力图上概率文字字号比例
+        - include_cbar:      是否在右侧加 colorbar
         """
         import numpy as np
         import matplotlib
@@ -251,26 +217,28 @@ class MinesweeperEnv(gym.Env):
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
         from matplotlib.patches import Rectangle, Circle
+        import matplotlib.ticker as mticker
 
         mode = (mode or getattr(self, "render_mode", "rgb_array")).lower()
 
         W_cell = self.cell_size * self.width
         H_cell = self.cell_size * self.height
-        gap = max(4, self.cell_size // 2)  # 左右之间的间隙像素
+        gap = max(4, self.cell_size // 2)  # 左右面板间距
+        cbar_pad = max(4, self.cell_size // 4)   # 右图与 colorbar 间距
+        cbar_w = max(8, int(self.cell_size * 0.5))  # colorbar 宽度（像素）
 
         def _rgb255_to_1(col):
             return tuple(np.array(col, dtype=float) / 255.0)
 
-        # --------- 解析 probs 成 (H, W) 的热力图矩阵（行=y, 列=x）---------
+        # --------- 解析 probs -> heat (H,W) ---------
         heat = None
         if probs is not None:
             p = np.asarray(probs)
             if p.ndim == 1:
                 if p.size != self.width * self.height:
-                    raise ValueError(f"Flat probs 大小应为 width*height={self.width*self.height}，但得到 {p.size}")
-                # 你给的映射：x = i // H, y = i % H
+                    raise ValueError(f"Flat probs 大小应为 {self.width*self.height}，但得到 {p.size}")
                 grid_x_y = p.reshape((self.width, self.height))  # (W,H)
-                heat = grid_x_y.T  # -> (H,W)
+                heat = grid_x_y.T                                 # (H,W)
             elif p.ndim == 2:
                 if p.shape == (self.width, self.height):
                     heat = p.T
@@ -281,29 +249,35 @@ class MinesweeperEnv(gym.Env):
             else:
                 raise ValueError("probs 应为 1D 或 2D 数组")
 
-        # --------- 选择画布布局（单画面或双画面）---------
+        # --------- 画布尺寸（是否包含 colorbar）---------
         two_panels = heat is not None
         if two_panels:
-            TOT_W, TOT_H = W_cell * 2 + gap, H_cell
+            extra = (cbar_pad + cbar_w) if include_cbar else 0
+            TOT_W, TOT_H = W_cell * 2 + gap + extra, H_cell
         else:
             TOT_W, TOT_H = W_cell, H_cell
 
-        # --------- mpl 缓存（双画面和单画面分开缓存）---------
-        cache_attr = "_mpl_cache_dual" if two_panels else "_mpl_cache_single"
+        # --------- 缓存不同布局 ---------
+        cache_attr = "_mpl_cache_dual_cbar" if two_panels else "_mpl_cache_single"
         cache = getattr(self, cache_attr, None)
-        if cache is None or cache.get("TOT_W") != TOT_W or cache.get("TOT_H") != TOT_H:
+        if cache is None or cache.get("TOT_W") != TOT_W or cache.get("TOT_H") != TOT_H or cache.get("include_cbar") != include_cbar:
             dpi = 100
             fig = Figure(figsize=(TOT_W / dpi, TOT_H / dpi), dpi=dpi)
             canvas = FigureCanvas(fig)
             axes = {}
+
             if two_panels:
                 # 左轴
                 axes["L"] = fig.add_axes([0, 0, W_cell / TOT_W, 1])
                 # 右轴
                 axes["R"] = fig.add_axes([(W_cell + gap) / TOT_W, 0, W_cell / TOT_W, 1])
-                for ax in (axes["L"], axes["R"]):
+                if include_cbar:
+                    # colorbar 轴（竖向）
+                    cbar_x0 = (W_cell + gap + W_cell + cbar_pad) / TOT_W
+                    axes["C"] = fig.add_axes([cbar_x0, 0.1, cbar_w / TOT_W, 0.8])  # 留上下边距好看些
+                for ax in axes.values():
                     ax.set_xlim(0, W_cell)
-                    ax.set_ylim(H_cell, 0)   # y 轴向下
+                    ax.set_ylim(H_cell, 0)
                     ax.axis("off")
             else:
                 axes["L"] = fig.add_axes([0, 0, 1, 1])
@@ -311,123 +285,108 @@ class MinesweeperEnv(gym.Env):
                 axes["L"].set_ylim(H_cell, 0)
                 axes["L"].axis("off")
 
-            cache = {"fig": fig, "canvas": canvas, "axes": axes, "TOT_W": TOT_W, "TOT_H": TOT_H}
+            cache = {"fig": fig, "canvas": canvas, "axes": axes,
+                    "TOT_W": TOT_W, "TOT_H": TOT_H, "include_cbar": include_cbar}
             setattr(self, cache_attr, cache)
 
         fig, canvas, axes = cache["fig"], cache["canvas"], cache["axes"]
         axL = axes["L"]
-        if two_panels:
-            axR = axes["R"]
+        axL.clear(); axL.set_xlim(0, W_cell); axL.set_ylim(H_cell, 0); axL.axis("off")
 
-        # --------- 绘制左侧：标准棋盘 ---------
-        axL.clear()
-        axL.set_xlim(0, W_cell)
-        axL.set_ylim(H_cell, 0)
-        axL.axis("off")
-
-        # 背景
+        # --------- 左侧棋盘（数字更小）---------
         axL.add_patch(Rectangle((0, 0), W_cell, H_cell,
                                 facecolor=_rgb255_to_1(self.colors["bg"]), edgecolor=None))
-
-        # 单元格
         for y in range(self.height):
             for x in range(self.width):
-                x0 = x * self.cell_size
-                y0 = y * self.cell_size
+                x0, y0 = x * self.cell_size, y * self.cell_size
                 v = int(self.board[x, y])
 
-                if v == 10:  # 未知
+                if v == 10:
                     axL.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
                                             facecolor=_rgb255_to_1(self.colors["unknown"]), edgecolor=None))
-                elif v == 9:  # 地雷
-                    cx, cy = x0 + self.cell_size / 2.0, y0 + self.cell_size / 2.0
+                elif v == 9:
+                    cx, cy = x0 + self.cell_size / 2, y0 + self.cell_size / 2
                     r = max(2, self.cell_size // 3)
                     axL.add_patch(Circle((cx, cy), r, color=_rgb255_to_1(self.colors["mine"])))
                 else:
                     if v != 0:
-                        cx, cy = x0 + self.cell_size / 2.0, y0 + self.cell_size / 2.0
+                        cx, cy = x0 + self.cell_size / 2, y0 + self.cell_size / 2
                         col = _rgb255_to_1(self.colors["numbers"][v])
                         axL.text(cx, cy, str(v), ha="center", va="center",
-                                color=col, fontsize=self.cell_size * 0.6,
+                                color=col,
+                                fontsize=max(6, self.cell_size * float(number_text_scale)),
                                 family="DejaVu Sans", weight="bold")
 
-                # 网格
                 axL.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
                                         fill=False, linewidth=1, edgecolor=_rgb255_to_1(self.colors["grid"])))
 
-        # --------- 绘制右侧：概率热力图 ---------
-        target_xy = None
+        # --------- 右侧热力图 + colorbar ---------
         if two_panels:
-            axR.clear()
-            axR.set_xlim(0, W_cell)
-            axR.set_ylim(H_cell, 0)
-            axR.axis("off")
+            axR = axes["R"]
+            axR.clear(); axR.set_xlim(0, W_cell); axR.set_ylim(H_cell, 0); axR.axis("off")
 
-            # 颜色映射范围
             vmin = float(np.nanmin(heat)) if np.isfinite(heat).any() else 0.0
             vmax = float(np.nanmax(heat)) if np.isfinite(heat).any() else 1.0
             if vmax <= vmin:
                 vmax = vmin + 1e-6
 
-            # 画热力图（把 (H,W) 直接 imshow 到右轴；origin='upper' 与 y 轴向下一致）
             im = axR.imshow(
                 heat,
                 origin="upper",
-                extent=(0, W_cell, H_cell, 0),  # (left, right, top, bottom) 注意我们 y 轴是倒的
+                extent=(0, W_cell, H_cell, 0),
                 cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
+                vmin=vmin, vmax=vmax,
                 interpolation="nearest",
             )
 
-            # 网格叠加
+            # 网格
             for y in range(self.height):
                 for x in range(self.width):
                     x0, y0 = x * self.cell_size, y * self.cell_size
                     axR.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
                                             fill=False, linewidth=1, edgecolor=_rgb255_to_1(self.colors["grid"])))
 
-            # 在热力图上叠加数值（可选）
+            # 概率文字（更小）
             if show_prob_text:
                 mid = 0.5 * (vmin + vmax)
+                fs_prob = max(6, int(self.cell_size * float(prob_text_scale)))
                 for y in range(self.height):
                     for x in range(self.width):
                         val = float(heat[y, x])
-                        cx, cy = x * self.cell_size + self.cell_size / 2.0, y * self.cell_size + self.cell_size / 2.0
-                        # 根据深浅选择黑/白
+                        cx, cy = x * self.cell_size + self.cell_size / 2, y * self.cell_size + self.cell_size / 2
                         txt_color = (1, 1, 1) if val >= mid else (0, 0, 0)
                         axR.text(cx, cy, f"{val:.2f}", ha="center", va="center",
-                                color=txt_color, fontsize=max(8, self.cell_size * 0.35),
-                                family="DejaVu Sans")
+                                color=txt_color, fontsize=fs_prob, family="DejaVu Sans")
 
-            # 计算需要高亮的格子（优先使用 action，否则取 probs 的 argmax）
+            # 高亮 action
+            ax_idx = None
             if action is not None:
                 ax_idx = int(action)
             else:
-                ax_idx = int(np.nanargmax(heat)) if np.isfinite(heat).any() else None
-                if ax_idx is not None:
-                    # heat 是 (H,W)，其 argmax 对应 (y,x)
-                    y = ax_idx // self.width
-                    x = ax_idx % self.width
-                    # 但用户给的 action -> (x,y) 是 i // H, i % H，若需要把 (x,y) 转回 action：
-                    # action = x * self.height + y
-                    ax_idx = x * self.height + y  # 让左右两侧一致用 action 编码
-
+                if np.isfinite(heat).any():
+                    flat_idx = int(np.nanargmax(heat))
+                    y_sel = flat_idx // self.width
+                    x_sel = flat_idx % self.width
+                    ax_idx = x_sel * self.height + y_sel
             if ax_idx is not None:
-                # 用你给的规则把 action -> (x,y)
                 x_sel = ax_idx // self.height
                 y_sel = ax_idx % self.height
-                target_xy = (x_sel, y_sel)
-
-                # 左右两侧都高亮该格子
                 for _ax in (axL, axR):
                     x0, y0 = x_sel * self.cell_size, y_sel * self.cell_size
-                    _ax.add_patch(Rectangle(
-                        (x0, y0), self.cell_size, self.cell_size,
-                        fill=False, linewidth=2.5, edgecolor=(1.0, 1.0, 0.0)  # 黄色
-                    ))
+                    _ax.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
+                                            fill=False, linewidth=2.5, edgecolor=(1.0, 1.0, 0.0)))
 
-        # --------- 输出 ----------
+            # colorbar
+            if include_cbar and "C" in axes:
+                cax = axes["C"]
+                cax.clear()
+                cb = fig.colorbar(im, cax=cax, orientation="vertical")
+                cb.formatter = mticker.FormatStrFormatter('%.2f')
+                cb.update_ticks()
+                cax.yaxis.set_ticks_position('right')  # 刻度在右侧
+                cax.tick_params(labelsize=max(6, int(self.cell_size * 0.30)))
+
+        # --------- 输出为 RGB numpy ---------
         canvas.draw()
         w, h = canvas.get_width_height()
         rgba = np.asarray(canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
