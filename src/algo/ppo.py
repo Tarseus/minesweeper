@@ -260,6 +260,13 @@ class PPO:
         # video eval
         if (update_idx % cfg.capture_video_freq == 0) and getattr(cfg, "capture_video", False) and self.val_env is not None:
             self.evaluate_video(prefix=f"val_{self.state.global_step}")
+        out = self.evaluate_n_episodes(
+            total_episodes=cfg.num_envs * 10, prefix=f"test_{self.state.global_step}"
+        )
+        if self.writer is not None:
+            self.writer.add_scalar("eval/win_rate", out["win_rate"], self.state.global_step)
+            self.writer.add_scalar("eval/avg_return", out["returns"].mean(), self.state.global_step)
+            self.writer.add_scalar("eval/avg_length", out["lengths"].mean(), self.state.global_step)
 
     @torch.no_grad()
     def evaluate_n_episodes(self, total_episodes: int = 100_000, prefix: str = "test"):
@@ -308,9 +315,7 @@ class PPO:
 
         while finished < total_episodes:
             # 前向选择动作（贪心/你模型默认策略）
-            action, logprob, _, value = self.model.get_action_and_value(
-                obs, action_mask=action_masks
-            )
+            action, logprob, _ = self.model.get_action(obs, action_mask=action_masks, decode_type="greedy")
 
             # 环境前进一步（大多数向量 env 会对 done 的实例自动 reset）
             next_obs_np, reward, terminated, truncated, info = envs.step(action.detach().cpu().numpy())
@@ -375,9 +380,9 @@ class PPO:
                     run_len[i] = 0
 
             # 轻量进度打印（每完成 ~10 批并行 env 或收尾时）
-            if finished and (finished % (10 * B) == 0 or finished >= total_episodes):
-                print(f"[{prefix}] finished={finished}/{total_episodes}  "
-                    f"win_rate={wins[:ptr].mean():.3f}")
+            # if finished and (finished % (10 * B) == 0 or finished >= total_episodes):
+            #     print(f"[{prefix}] finished={finished}/{total_episodes}  "
+            #         f"win_rate={wins[:ptr].mean():.3f}")
 
         # 汇总
         out = {
@@ -449,18 +454,18 @@ class PPO:
             )
 
             if self.writer is not None:
-                self.writer.add_scalar("charts/learning_rate", self.optimizer.param_groups[0]["lr"], self.state.global_step)
-                self.writer.add_scalar("losses/value_loss", stats['v_loss'], self.state.global_step)
-                self.writer.add_scalar("losses/policy_loss", stats['pg_loss'], self.state.global_step)
-                self.writer.add_scalar("losses/entropy", stats['entropy'], self.state.global_step)
-                self.writer.add_scalar("losses/old_approx_kl", stats['old_approx_kl'], self.state.global_step)
-                self.writer.add_scalar("losses/approx_kl", stats['approx_kl'], self.state.global_step)
-                self.writer.add_scalar("losses/clipfrac", stats['clipfrac'], self.state.global_step)
-                self.writer.add_scalar("losses/explained_variance", stats['explained_var'], self.state.global_step)
-                self.writer.add_scalar("charts/SPS", sps, self.state.global_step)
-                self.writer.add_scalar("charts/win_rate", self.state.win_rate, self.state.global_step)
-                self.writer.add_scalar("charts/episodic_return", self.state.episodic_return, self.state.global_step)
-                self.writer.add_scalar("charts/episodic_length", self.state.episodic_length, self.state.global_step)
+                self.writer.add_scalar("train/learning_rate", self.optimizer.param_groups[0]["lr"], self.state.global_step)
+                self.writer.add_scalar("loss/value_loss", stats['v_loss'], self.state.global_step)
+                self.writer.add_scalar("loss/policy_loss", stats['pg_loss'], self.state.global_step)
+                self.writer.add_scalar("loss/entropy", stats['entropy'], self.state.global_step)
+                self.writer.add_scalar("loss/old_approx_kl", stats['old_approx_kl'], self.state.global_step)
+                self.writer.add_scalar("loss/approx_kl", stats['approx_kl'], self.state.global_step)
+                self.writer.add_scalar("loss/clipfrac", stats['clipfrac'], self.state.global_step)
+                self.writer.add_scalar("loss/explained_variance", stats['explained_var'], self.state.global_step)
+                self.writer.add_scalar("train/SPS", sps, self.state.global_step)
+                self.writer.add_scalar("train/win_rate", self.state.win_rate, self.state.global_step)
+                self.writer.add_scalar("train/episodic_return", self.state.episodic_return, self.state.global_step)
+                self.writer.add_scalar("train/episodic_length", self.state.episodic_length, self.state.global_step)
                 
 
             self.maybe_eval_and_save(update)

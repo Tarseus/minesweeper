@@ -13,6 +13,7 @@ from src.config import PPOConfig
 def test():
     import random
     config = PPOConfig()
+    config.track = False
     seed = random.randint(0, 2**32 - 1)
     # seed = config.seed
     run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
@@ -22,7 +23,7 @@ def test():
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = config.torch_deterministic
 
-    device = torch.device("cuda:2" if config.cuda and torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:5" if config.cuda and torch.cuda.is_available() else "cpu")
 
     if run_name is None:
         run_name = f"{config.exp_name}_{seed}_{time.strftime('%d-%m-%Y_%H-%M-%S')}"
@@ -79,12 +80,10 @@ def test():
         run_name=run_name,
     )
 
-    if getattr(config, "use_pretrain", False):
-        pre_path = config.pretrain_model_path + "_" + config.difficulty + ".pth"
-        agent.load(pre_path)
+    # if getattr(config, "use_pretrain", False):
+    agent.load(config.test_model_path)
 
-    # out = agent.evaluate_n_episodes()
-    # print(f"Win rate: {out['win_rate']:.2f}")
+    out = agent.evaluate_n_episodes()
     agent.evaluate_video()
 
     if wandb_run is not None:

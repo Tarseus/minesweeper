@@ -64,6 +64,31 @@ class MinesweeperEnv(gym.Env):
         self._solver_env_idx = 0
         self._fed_cells = set()  # 记录已经喂过的数字格，避免重复 add_knowledge
         
+        # pygame settings
+        self.cell_size = 41
+        self.screen_width = self.width * self.cell_size
+        self.screen_height = self.height * self.cell_size
+        self.screen = None
+        self.colors = {
+            'bg': (192, 192, 192), # background color: light gray
+            'grid': (128, 128, 128), # grid line color: gray
+            'unknown': (160, 160, 160), # unknown cell color: light gray
+            'mine': (255, 0, 0), # mine color: red
+            'numbers': [
+                (192, 192, 192), # 0: light gray
+                (0, 0, 255), # 1: blue
+                (0, 128, 0), # 2: green
+                (255, 0, 0), # 3: red
+                (0, 0, 128), # 4: dark blue
+                (128, 0, 0), # 5: dark red
+                (0, 128, 128), # 6: cyan
+                (0, 0, 0), # 7: black
+                (128, 128, 128) # 8: gray
+            ]
+        }
+        pygame.font.init()
+        self.font = pygame.font.SysFont('Arial', 36)
+        
     def seed(self, seed=None):
         """Set seed for random number generators"""
         self.current_seed = seed
