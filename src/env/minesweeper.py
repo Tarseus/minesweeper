@@ -14,7 +14,7 @@ def load_rewards_config():
     return rewards["rewards"]
 
 class MinesweeperEnv(gym.Env):
-    def __init__(self, config):
+    def __init__(self, config, seed=None):
         width = config.get('width', 8)
         height = config.get('height', 8)
         num_mines = config.get('num_mines', 10)
@@ -37,7 +37,10 @@ class MinesweeperEnv(gym.Env):
         self.action_mask = np.ones(width * height, dtype=bool)
         self.use_dfs = use_dfs
         self.np_random = None
-        self.current_seed = config.get('seed', 0)
+        if seed is not None:
+            self.current_seed = seed
+        else:
+            self.current_seed = config.get('seed', 0)
         self._true_board = None
         
         # variable to track information
@@ -47,6 +50,8 @@ class MinesweeperEnv(gym.Env):
             'action_mask': self.get_action_mask(),
             'revealed_cells': 0,
             'full_board': None,  # will be set in reset()
+            'guess_action': False,  # will be set in step() 是否使用猜测
+            'seed': self.current_seed,
         }
 
         # rewards configuration and relevant variables
@@ -144,6 +149,7 @@ class MinesweeperEnv(gym.Env):
         self.info.update({
             "action_mask": self.get_action_mask(),
             "full_board": self._true_board.copy(),
+            "seed": self.current_seed,
         })
 
         return self.board.copy(), self.info
@@ -163,6 +169,10 @@ class MinesweeperEnv(gym.Env):
         deducible_safe, deducible_mines = self._deducible_safe_and_mines()
         no_deducible_move = (len(deducible_safe) == 0)  # 你没有“插旗”动作，地雷可推断在这版用不上
 
+        if no_deducible_move and np.any(self.board != 10):
+            # 如果没有可推断的安全格或地雷格，且当前有已揭开的格子，则认为是猜测
+            self.info.update({"guess_action": True,})
+
         self.action_mask[action] = False
         last_revealed = np.count_nonzero(self.board != 10)
 
@@ -176,6 +186,8 @@ class MinesweeperEnv(gym.Env):
                 "action_mask": self.get_action_mask(),
             })
             reward = self.rewards_config["lose"]
+            if (x, y) in deducible_mines:
+                reward += self.rewards_config["known_mine"]
             self._last_uncertainty = 0.0
             obs = self.board.copy()
             return obs, reward, self.done, False, self.info
@@ -229,7 +241,9 @@ class MinesweeperEnv(gym.Env):
                             
     def render(self, mode="rgb_array", probs=None, action=None,
            show_prob_text=True, number_text_scale=0.50, prob_text_scale=0.28,
-           include_cbar=True):
+           include_cbar=True,
+           show_logic_boxes=True,           # NEW: 是否显示逻辑框
+           logic_box_linewidth=2.0):        # NEW: 逻辑框线宽
         """
         新增:
         - number_text_scale: 左侧棋盘数字字号比例 (相对 cell_size)
@@ -273,6 +287,28 @@ class MinesweeperEnv(gym.Env):
                     raise ValueError(f"二维 probs 形状需为 (W,H) 或 (H,W)，但得到 {p.shape}")
             else:
                 raise ValueError("probs 应为 1D 或 2D 数组")
+
+        # --------- 逻辑可推断集合 ---------
+        safe_cells, mine_cells = (set(), set())
+        if show_logic_boxes:
+            safe_cells, mine_cells = self._deducible_safe_and_mines()
+            
+        def _draw_logic_boxes(ax):
+            if not show_logic_boxes:
+                return
+            def _rgb255_to_1_tuple(rgb):
+                return tuple(np.array(rgb, dtype=float) / 255.0)
+            safe_col = _rgb255_to_1_tuple((0, 255, 0))    # 绿色：安全
+            mine_col = _rgb255_to_1_tuple((255, 0, 0))    # 红色：地雷
+            for (x, y) in safe_cells:
+                x0, y0 = x * self.cell_size, y * self.cell_size
+                ax.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
+                                    fill=False, linewidth=logic_box_linewidth, edgecolor=safe_col))
+            for (x, y) in mine_cells:
+                x0, y0 = x * self.cell_size, y * self.cell_size
+                ax.add_patch(Rectangle((x0, y0), self.cell_size, self.cell_size,
+                                    fill=False, linewidth=logic_box_linewidth, edgecolor=mine_col))
+
 
         # --------- 画布尺寸（是否包含 colorbar）---------
         two_panels = heat is not None
@@ -321,6 +357,7 @@ class MinesweeperEnv(gym.Env):
         # --------- 左侧棋盘（数字更小）---------
         axL.add_patch(Rectangle((0, 0), W_cell, H_cell,
                                 facecolor=_rgb255_to_1(self.colors["bg"]), edgecolor=None))
+        _draw_logic_boxes(axL)   # NEW
         for y in range(self.height):
             for x in range(self.width):
                 x0, y0 = x * self.cell_size, y * self.cell_size
@@ -379,9 +416,11 @@ class MinesweeperEnv(gym.Env):
                     for x in range(self.width):
                         val = float(heat[y, x])
                         cx, cy = x * self.cell_size + self.cell_size / 2, y * self.cell_size + self.cell_size / 2
-                        txt_color = (1, 1, 1) if val >= mid else (0, 0, 0)
+                        txt_color = (0, 0, 0) if val >= mid else (1, 1, 1)
                         axR.text(cx, cy, f"{val:.2f}", ha="center", va="center",
                                 color=txt_color, fontsize=fs_prob, family="DejaVu Sans")
+
+            _draw_logic_boxes(axR)   # NEW
 
             # 高亮 action
             ax_idx = None
@@ -436,6 +475,15 @@ class MinesweeperEnv(gym.Env):
 
         return frame  # 'rgb_array'
 
+    def logic_action(self) -> int:
+        # 优先用逻辑可证安全格
+        safe, _ = self._deducible_safe_and_mines()
+        if safe:
+            x, y = next(iter(safe))
+            return int(x * self.height + y)
+        # 否则在当前合法动作里随机
+        valid = np.flatnonzero(self.get_action_mask())
+        return int(self.np_random.choice(valid))
         
     def close(self):
         if self.screen is not None:

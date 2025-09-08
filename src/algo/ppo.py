@@ -63,12 +63,15 @@ class PPO:
 
         # rollout buffers
         shape_obs = envs.single_observation_space.shape
+        H, W = shape_obs
         self.obs      = torch.zeros((config.num_steps, config.num_envs) + shape_obs, device=device)
         self.actions  = torch.zeros((config.num_steps, config.num_envs) + envs.single_action_space.shape, device=device)
         self.logprobs = torch.zeros((config.num_steps, config.num_envs), device=device)
         self.values   = torch.zeros((config.num_steps, config.num_envs), device=device)
         self.rewards  = torch.zeros((config.num_steps, config.num_envs), device=device)
         self.dones    = torch.zeros((config.num_steps, config.num_envs), device=device)
+        # self.full_boards = torch.torch.empty((config.num_steps, config.num_envs, H, W),
+        #                        dtype=torch.int, device=device)
 
         self.state = TrainState(global_step=0, win_rate=0.0)
 
@@ -82,6 +85,11 @@ class PPO:
         B = obs_np.shape[0]
         A = self.envs.single_action_space.n
         action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
+        
+        H, W = self.envs.single_observation_space.shape
+        # curr_full = self._stack_full_board(info["full_board"], B, H, W)  # NEW
+        curr_full = None
+        
         next_obs = torch.as_tensor(obs_np, device=device)
 
         final_info_seen = 0
@@ -96,7 +104,7 @@ class PPO:
 
             with torch.no_grad():
                 action, logprob, _, value = self.model.get_action_and_value(
-                    next_obs, action_mask=action_masks
+                    next_obs, action_mask=action_masks, full_board=curr_full,  # NEW
                 )
                 self.values[step] = value.flatten()
 
@@ -104,6 +112,8 @@ class PPO:
             self.logprobs[step] = logprob
 
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action.cpu().numpy())
+            # curr_full = self._stack_full_board(info["full_board"], B, H, W)  # NEW
+            # self.full_boards[step] = curr_full  # NEW
             action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
             done = np.logical_or(terminated, truncated)
 
@@ -129,7 +139,9 @@ class PPO:
         self.state.episodic_length = episodic_length
 
         with torch.no_grad():
-            next_value = self.model.get_value(next_obs).reshape(1, -1)
+            next_value = self.model.get_value(
+                next_obs, full_board=curr_full  # NEW
+            ).reshape(1, -1)
 
         out = {
             "next_obs": next_obs,
@@ -187,14 +199,18 @@ class PPO:
         approx_kl = torch.tensor(0.0)
         old_approx_kl = torch.tensor(0.0)
 
+        H, W = self.envs.single_observation_space.shape
+
         for epoch in range(cfg.update_epoches):
             np.random.shuffle(b_inds)
             for start in range(0, cfg.batch_size, cfg.mini_batch_size):
                 end = start + cfg.mini_batch_size
                 mb_inds = b_inds[start:end]
 
+                # b_full = self.full_boards.reshape((-1, H, W))  # CPU 张量
                 _, newlogprob, entropy, newvalue = self.model.get_action_and_value(
-                    b_obs[mb_inds], b_actions.long()[mb_inds]
+                    b_obs[mb_inds], b_actions.long()[mb_inds],
+                    # full_board=b_full[mb_inds],  # NEW
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
@@ -268,8 +284,245 @@ class PPO:
             self.writer.add_scalar("eval/avg_return", out["returns"].mean(), self.state.global_step)
             self.writer.add_scalar("eval/avg_length", out["lengths"].mean(), self.state.global_step)
 
+    # ------------------------ training loop ------------------------
+    def train(self):
+        cfg = self.config
+        start_time = time.time()
+        num_updates = cfg.total_timesteps // cfg.batch_size
+
+        for update in range(1, num_updates + 1):
+            if cfg.anneal_lr:
+                frac = 1.0 - (update - 1.0) / num_updates
+                self.optimizer.param_groups[0]["lr"] = cfg.learning_rate * frac
+
+            next_obs, extra = self.rollout()
+            advantages, returns = self.compute_advantages(extra["next_done"], extra["next_value"])
+            stats = self.update_policy(advantages, returns)
+
+            # logging
+            elapsed = time.time() - start_time
+            progress = update / num_updates
+            remaining = (elapsed / progress - elapsed) if progress > 0 else 0
+            sps = int(self.state.global_step / max(1e-6, elapsed))
+
+            print(
+                f"Update {update}/{num_updates} | "
+                f"Value Loss: {stats['v_loss']:.3f} | Policy Loss: {stats['pg_loss']:.3f} | "
+                f"Entropy: {stats['entropy']:.3f} | Var: {stats['explained_var']:.3f} | "
+                f"SPS: {sps} | Win Rate: {self.state.win_rate:.3f} | "
+                f"Episodic Return: {self.state.episodic_return:.1f} | Episodic Length: {self.state.episodic_length:.1f} | "
+                f"ETA: {format_seconds(remaining)}"
+            )
+
+            if self.writer is not None:
+                self.writer.add_scalar("train/learning_rate", self.optimizer.param_groups[0]["lr"], self.state.global_step)
+                self.writer.add_scalar("loss/value_loss", stats['v_loss'], self.state.global_step)
+                self.writer.add_scalar("loss/policy_loss", stats['pg_loss'], self.state.global_step)
+                self.writer.add_scalar("loss/entropy", stats['entropy'], self.state.global_step)
+                self.writer.add_scalar("loss/old_approx_kl", stats['old_approx_kl'], self.state.global_step)
+                self.writer.add_scalar("loss/approx_kl", stats['approx_kl'], self.state.global_step)
+                self.writer.add_scalar("loss/clipfrac", stats['clipfrac'], self.state.global_step)
+                self.writer.add_scalar("loss/explained_variance", stats['explained_var'], self.state.global_step)
+                self.writer.add_scalar("train/SPS", sps, self.state.global_step)
+                self.writer.add_scalar("train/win_rate", self.state.win_rate, self.state.global_step)
+                self.writer.add_scalar("train/episodic_return", self.state.episodic_return, self.state.global_step)
+                self.writer.add_scalar("train/episodic_length", self.state.episodic_length, self.state.global_step)
+                
+
+            self.maybe_eval_and_save(update)
+        
+    
     @torch.no_grad()
     def evaluate_n_episodes(self, total_episodes: int = 100_000, prefix: str = "test"):
+        """
+        用现有的 self.envs（向量环境，自动 reset done 的那种）评测 total_episodes 局。
+        返回：
+            {
+            "win_rate": float,
+            "wins": np.ndarray[bool, total_episodes],
+            "returns": np.ndarray[float32, total_episodes],
+            "lengths": np.ndarray[int32, total_episodes],
+            "guess_seeds": list[int]  # 记录需要猜测的环境的种子
+            }
+        """
+        device = self.device
+        envs = self.envs
+
+        # ---- reset &基本信息 ----
+        obs_np, info = envs.reset()
+        B = obs_np.shape[0]
+        A = envs.single_action_space.n
+        obs = torch.as_tensor(obs_np, device=device)
+        action_masks = self._norm_mask(info["action_mask"], B, A, device)
+
+        # ---- 结果缓冲区（若想省内存可用 np.memmap 落盘）----
+        wins    = np.zeros(total_episodes, dtype=bool)
+        returns = np.zeros(total_episodes, dtype=np.float32)
+        lengths = np.zeros(total_episodes, dtype=np.int32)
+
+        guess_used = np.zeros(B, dtype=bool)         # 这一局是否出现过 guess
+        cur_seed   = np.full(B, -1, dtype=np.int64)  # 跟踪每个 env 当前局的 seed（能拿到就填）
+        guess_seeds = set()
+
+        def add_guess_seed(seed):
+            if len(guess_seeds) < 10:
+                guess_seeds.add(seed)
+        
+        if "seed" in info:
+            cur_seed[:] = np.asarray(info["seed"]).reshape(-1)
+
+        # 若环境不提供 episode 统计，这两条作为兜底在线累计
+        run_ret = np.zeros(B, dtype=np.float32)
+        run_len = np.zeros(B, dtype=np.int32)
+
+        finished = 0  # 已完成的局数
+        ptr = 0       # 写入结果数组的游标
+
+        def _get_success(fi: dict) -> bool:
+            # 兼容多种 key
+            return bool(fi["is_success"])
+
+        while finished < total_episodes:
+            # 前向选择动作（贪心/你模型默认策略）
+            action, logprob, _ = self.model.get_action(obs, action_mask=action_masks, decode_type="greedy")
+
+            # 环境前进一步（大多数向量 env 会对 done 的实例自动 reset）
+            next_obs_np, reward, terminated, truncated, info = envs.step(action.detach().cpu().numpy())
+            done = np.logical_or(terminated, truncated)
+
+            g = np.asarray(info.get("guess_action", np.zeros(B, bool)), dtype=bool).reshape(-1)
+            guess_used |= g
+
+            # 兜底的在线累计
+            r = np.asarray(reward, dtype=np.float32).reshape(-1)
+            run_ret += r
+            run_len += 1
+
+            # 准备下一步
+            obs = torch.as_tensor(next_obs_np, device=device)
+            action_masks = self._norm_mask(info["action_mask"], B, A, device)
+
+            # 读取刚刚完成的 episode（Gymnasium VectorEnv 会在 final_info 里给）
+            if "final_info" in info:
+                for i, fi in enumerate(info["final_info"]):
+                    if fi is None:
+                        continue
+
+                    if guess_used[i]:
+                        # 取种子：优先 final_info，其次本地跟踪
+                        s = (fi.get("seed", None)
+                            or (fi.get("episode") or {}).get("seed", None)
+                            or (None if cur_seed[i] == -1 else int(cur_seed[i])))
+                        if s is not None:
+                            # guess_seeds.add(int(s))
+                            add_guess_seed(int(s))
+
+                    guess_used[i] = False
+                    
+                    if "seed" in info:
+                        cur_seed[i] = int(np.asarray(info["seed"]).reshape(-1)[i])
+                    
+                    succ = _get_success(fi)
+                    if fi.get("episode") is not None:
+                        ep_r = float(fi["episode"]["r"])
+                        ep_l = int(fi["episode"]["l"])
+                    else:
+                        # 没有 episode 统计就用兜底的累计
+                        ep_r = float(run_ret[i])
+                        ep_l = int(run_len[i])
+
+                    if ptr < total_episodes:
+                        wins[ptr]    = succ
+                        returns[ptr] = ep_r
+                        lengths[ptr] = ep_l
+                        ptr += 1
+                        finished += 1
+
+                    # 清零该环境的在线累计，为下一局做准备
+                    run_ret[i] = 0.0
+                    run_len[i] = 0
+            else:
+                # 退化路径：没有 final_info，就用 done 标志 & info 里的 success 数组
+                succ_arr = None
+                for k in ("is_success", "success", "won", "win"):
+                    if k in info:
+                        succ_arr = np.asarray(info[k])
+                        break
+                for i, d in enumerate(done):
+                    if not d:
+                        continue
+                    
+                    if guess_used[i]:
+                        s = None
+                        if "seed" in info:
+                            s = int(np.asarray(info["seed"]).reshape(-1)[i])
+                        elif cur_seed[i] != -1:
+                            s = int(cur_seed[i])
+                        if s is not None:
+                            # guess_seeds.add(s)
+                            add_guess_seed(s)
+                    guess_used[i] = False
+                    
+                    succ = bool(succ_arr[i]) if succ_arr is not None else False
+                    ep_r = float(run_ret[i])
+                    ep_l = int(run_len[i])
+                    if ptr < total_episodes:
+                        wins[ptr]    = succ
+                        returns[ptr] = ep_r
+                        lengths[ptr] = ep_l
+                        ptr += 1
+                        finished += 1
+                    run_ret[i] = 0.0
+                    run_len[i] = 0
+
+            # 轻量进度打印（每完成 ~10 批并行 env 或收尾时）
+            # if finished and (finished % (10 * B) == 0 or finished >= total_episodes):
+            #     print(f"[{prefix}] finished={finished}/{total_episodes}  "
+            #         f"win_rate={wins[:ptr].mean():.3f}")
+
+        # 汇总
+        out = {
+            "win_rate": float(wins.mean()),
+            "wins": wins,
+            "returns": returns,
+            "lengths": lengths,
+            "guess_seeds": list(guess_seeds)  # 返回需要猜测的种子
+        }
+
+        print(f"[{prefix}] done. win_rate={out['win_rate']:.4f}, "
+            f"avg_return={returns.mean():.3f}, avg_length={lengths.mean():.2f}")
+        
+        return out
+
+    @torch.no_grad()
+    def evaluate_video(self, prefix: str = "val", env = None):
+        cfg = self.config
+        device = self.device
+        if env is None:
+            env = self.val_env
+        if self.video_wrapper_cls is not None and not isinstance(env, self.video_wrapper_cls):
+            # assume already wrapped outside; keep it simple here
+            pass
+        obs, info = env.reset()
+        B = 1
+        A = self.envs.single_action_space.n
+        next_obs = torch.as_tensor(obs, device=device).unsqueeze(0)
+        # print(info["action_mask"].shape)
+        action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
+        while True:
+            action, probs, entropy  = self.model.get_action(next_obs, action_mask=action_masks, decode_type="greedy")
+            obs2, reward, terminated, truncated, info = env.step(action.cpu().numpy(), probs=probs.squeeze().cpu().detach().numpy())
+            action_masks = [info.get("action_mask")] if isinstance(info.get("action_mask"), np.ndarray) else info.get("action_mask")
+            action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
+            done = np.logical_or(terminated, truncated)
+            if done:
+                break
+            next_obs = torch.as_tensor(obs2, device=device).unsqueeze(0)
+        time.sleep(0.5)
+        print(f"Evaluation finished for {prefix}.")
+        env.close()
+        
+    def evaluate_logic(self, total_episodes: int = 100_000):
         """
         用现有的 self.envs（向量环境，自动 reset done 的那种）评测 total_episodes 局。
         返回：
@@ -314,11 +567,8 @@ class PPO:
             return False
 
         while finished < total_episodes:
-            # 前向选择动作（贪心/你模型默认策略）
-            action, logprob, _ = self.model.get_action(obs, action_mask=action_masks, decode_type="greedy")
-
-            # 环境前进一步（大多数向量 env 会对 done 的实例自动 reset）
-            next_obs_np, reward, terminated, truncated, info = envs.step(action.detach().cpu().numpy())
+            actions = np.asarray(envs.call("logic_action"), dtype=np.int64)
+            next_obs_np, reward, terminated, truncated, info = envs.step(actions)
             done = np.logical_or(terminated, truncated)
 
             # 兜底的在线累计
@@ -379,11 +629,6 @@ class PPO:
                     run_ret[i] = 0.0
                     run_len[i] = 0
 
-            # 轻量进度打印（每完成 ~10 批并行 env 或收尾时）
-            # if finished and (finished % (10 * B) == 0 or finished >= total_episodes):
-            #     print(f"[{prefix}] finished={finished}/{total_episodes}  "
-            #         f"win_rate={wins[:ptr].mean():.3f}")
-
         # 汇总
         out = {
             "win_rate": float(wins.mean()),
@@ -391,85 +636,9 @@ class PPO:
             "returns": returns,
             "lengths": lengths,
         }
-        print(f"[{prefix}] done. win_rate={out['win_rate']:.4f}, "
+        print(f"[test logic] done. win_rate={out['win_rate']:.4f}, "
             f"avg_return={returns.mean():.3f}, avg_length={lengths.mean():.2f}")
         return out
-
-
-    @torch.no_grad()
-    def evaluate_video(self, prefix: str = "val"):
-        cfg = self.config
-        device = self.device
-        env = self.val_env
-        if self.video_wrapper_cls is not None and not isinstance(env, self.video_wrapper_cls):
-            # assume already wrapped outside; keep it simple here
-            pass
-        obs, info = env.reset()
-        B = 1
-        A = self.envs.single_action_space.n
-        next_obs = torch.as_tensor(obs, device=device).unsqueeze(0)
-        # print(info["action_mask"].shape)
-        action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
-        while True:
-            action, probs, entropy  = self.model.get_action(next_obs, action_mask=action_masks, decode_type="greedy")
-            obs2, reward, terminated, truncated, info = env.step(action.cpu().numpy(), probs=probs.squeeze().cpu().detach().numpy())
-            action_masks = [info.get("action_mask")] if isinstance(info.get("action_mask"), np.ndarray) else info.get("action_mask")
-            action_masks = self._norm_mask(info["action_mask"], B, A, self.device)
-            done = np.logical_or(terminated, truncated)
-            if done:
-                break
-            next_obs = torch.as_tensor(obs2, device=device).unsqueeze(0)
-        time.sleep(0.5)
-        print(f"Evaluation finished for {prefix}.")
-        env.close()
-
-    # ------------------------ training loop ------------------------
-    def train(self):
-        cfg = self.config
-        start_time = time.time()
-        num_updates = cfg.total_timesteps // cfg.batch_size
-
-        for update in range(1, num_updates + 1):
-            if cfg.anneal_lr:
-                frac = 1.0 - (update - 1.0) / num_updates
-                self.optimizer.param_groups[0]["lr"] = cfg.learning_rate * frac
-
-            next_obs, extra = self.rollout()
-            advantages, returns = self.compute_advantages(extra["next_done"], extra["next_value"])
-            stats = self.update_policy(advantages, returns)
-
-            # logging
-            elapsed = time.time() - start_time
-            progress = update / num_updates
-            remaining = (elapsed / progress - elapsed) if progress > 0 else 0
-            sps = int(self.state.global_step / max(1e-6, elapsed))
-
-            print(
-                f"Update {update}/{num_updates} | "
-                f"Value Loss: {stats['v_loss']:.3f} | Policy Loss: {stats['pg_loss']:.3f} | "
-                f"Entropy: {stats['entropy']:.3f} | Var: {stats['explained_var']:.3f} | "
-                f"SPS: {sps} | Win Rate: {self.state.win_rate:.3f} | "
-                f"Episodic Return: {self.state.episodic_return:.1f} | Episodic Length: {self.state.episodic_length:.1f} | "
-                f"ETA: {format_seconds(remaining)}"
-            )
-
-            if self.writer is not None:
-                self.writer.add_scalar("train/learning_rate", self.optimizer.param_groups[0]["lr"], self.state.global_step)
-                self.writer.add_scalar("loss/value_loss", stats['v_loss'], self.state.global_step)
-                self.writer.add_scalar("loss/policy_loss", stats['pg_loss'], self.state.global_step)
-                self.writer.add_scalar("loss/entropy", stats['entropy'], self.state.global_step)
-                self.writer.add_scalar("loss/old_approx_kl", stats['old_approx_kl'], self.state.global_step)
-                self.writer.add_scalar("loss/approx_kl", stats['approx_kl'], self.state.global_step)
-                self.writer.add_scalar("loss/clipfrac", stats['clipfrac'], self.state.global_step)
-                self.writer.add_scalar("loss/explained_variance", stats['explained_var'], self.state.global_step)
-                self.writer.add_scalar("train/SPS", sps, self.state.global_step)
-                self.writer.add_scalar("train/win_rate", self.state.win_rate, self.state.global_step)
-                self.writer.add_scalar("train/episodic_return", self.state.episodic_return, self.state.global_step)
-                self.writer.add_scalar("train/episodic_length", self.state.episodic_length, self.state.global_step)
-                
-
-            self.maybe_eval_and_save(update)
-        
     # ------------------------ helpers ------------------------
     def save(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -496,3 +665,17 @@ class PPO:
             m = m.unsqueeze(0).expand(B, -1)
         assert m.shape == (B, A), f"mask shape {m.shape} != {(B,A)}"
         return m
+    
+    def _stack_full_board(self, full_board, B: int, H: int, W: int):
+        arr = full_board
+        if isinstance(arr, (list, tuple)):
+            arr = np.stack([np.asarray(b, dtype=np.int64).reshape(H, W) for b in arr], axis=0)
+        else:
+            arr = np.asarray(arr)
+            if arr.dtype == object:
+                arr = np.stack([np.asarray(b, dtype=np.int64).reshape(H, W) for b in arr], axis=0)
+            else:
+                arr = arr.astype(np.int64)
+        assert arr.shape == (B, H, W)
+        # 先驻留 CPU；用到的时候再 .to(self.device)
+        return torch.as_tensor(arr, dtype=torch.int, device=self.device)

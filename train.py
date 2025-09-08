@@ -3,6 +3,7 @@ import os, time, random
 import numpy as np
 import torch
 import gymnasium as gym
+import argparse
 
 from src.utils.env_utils import make_env
 from src.wrappers.video_record import VideoRecorderWrapper
@@ -10,22 +11,33 @@ from src.models import CNNBased
 from src.algo.ppo import PPO
 from src.config import PPOConfig
 
-def train():
-    config = PPOConfig()
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train PPO on specified GPU.")
+    parser.add_argument(
+        "--gpu", type=int, default=2, help="Specify the GPU to train on (default: 2)."
+    )
+    parser.add_argument(
+        "--difficulty", type=str, default="beginner", help="Game difficulty level (default: beginner)."
+    )
+    return parser.parse_args()
+
+def train(gpu: int, difficulty: str):
+    config = PPOConfig(difficulty=difficulty)
     run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
-    seed = config.seed
+    seed = config.seed + config.total_timesteps
 
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = config.torch_deterministic
 
-    device = torch.device("cuda:1" if config.cuda and torch.cuda.is_available() else "cpu")
+    # 使用从命令行获得的 GPU
+    device = torch.device(f"cuda:{gpu}" if config.cuda and torch.cuda.is_available() else "cpu")
 
     if run_name is None:
         run_name = f"{config.exp_name}_{seed}_{time.strftime('%d-%m-%Y_%H-%M-%S')}"
 
-    envs = gym.vector.SyncVectorEnv([
+    envs = gym.vector.SyncVectorEnv([ 
         make_env(config, seed + i, i, False, run_name) for i in range(config.num_envs)
     ])
 
@@ -78,7 +90,8 @@ def train():
     )
 
     if getattr(config, "use_pretrain", False):
-        pre_path = config.pretrain_model_path + "_" + config.difficulty + ".pth"
+        pre_path = config.pretrain_model_path 
+        print(f"Loading pre-trained model from {config.pretrain_model_path}")
         agent.load(pre_path)
 
     agent.train()
@@ -103,4 +116,5 @@ def train():
     return out
 
 if __name__ == "__main__":
-    train()
+    args = parse_args()
+    train(args.gpu, args.difficulty)

@@ -12,10 +12,11 @@ from src.config import PPOConfig
 
 def test():
     import random
-    config = PPOConfig()
+    config = PPOConfig(difficulty="beginner")
     config.track = False
-    seed = random.randint(0, 2**32 - 1)
-    # seed = config.seed
+    # seed = random.randint(0, 2**32 - 1)
+    # seed = (config.seed + config.total_timesteps) % (2**32 - 1)
+    seed = config.seed
     run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
 
     random.seed(seed)
@@ -57,16 +58,16 @@ def test():
         )
 
     val_env = None
-    if getattr(config, "capture_video", False):
-        from src.env import MinesweeperEnv
-        val_env = MinesweeperEnv(config)
-        val_env = VideoRecorderWrapper(
-            val_env,
-            videos_dir=f"videos/{run_name}",
-            fps=1,
-            name_prefix=f"val_0",
-            if_save_frames=True,
-        )
+    # if getattr(config, "capture_video", False):
+    from src.env import MinesweeperEnv
+    val_env = MinesweeperEnv(config)
+    val_env = VideoRecorderWrapper(
+        val_env,
+        videos_dir=f"videos/{run_name}",
+        fps=1,
+        name_prefix=f"val_0",
+        if_save_frames=True,
+    )
 
     agent = PPO(
         envs=envs,
@@ -84,7 +85,19 @@ def test():
     agent.load(config.test_model_path)
 
     out = agent.evaluate_n_episodes()
-    agent.evaluate_video()
+    # agent.evaluate_logic()
+    guess_seeds = out["guess_seeds"]
+    # guess_seeds = [37]
+    for s in guess_seeds:
+        env = MinesweeperEnv(config, seed=s)
+        env = VideoRecorderWrapper(
+            env,
+            videos_dir=f"videos/{run_name}_{s}",
+            fps=1,
+            name_prefix=f"val_0",
+            if_save_frames=True,
+        )
+        agent.evaluate_video(env = env)
 
     if wandb_run is not None:
         final_path = os.path.join(wandb_run.dir, f"ppo_{config.difficulty}_{agent.state.global_step}.pth")

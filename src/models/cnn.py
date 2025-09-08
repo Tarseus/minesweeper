@@ -114,6 +114,10 @@ class CNNBased(nn.Module):
         if self.stop_actor_grad_in_value:
             obs_vec = obs_vec.detach()  # 阻断 value 损失对 actor 主干的梯度
 
+        if full_board is not None and not isinstance(full_board, torch.Tensor):
+            full_board = torch.as_tensor(full_board, device=x.device)
+        elif isinstance(full_board, torch.Tensor) and full_board.device != x.device:
+            full_board = full_board.to(x.device)
         if full_board is not None:
             full_oh   = self._one_hot(full_board)           # (B,11,H,W)，含地雷与周围数的全真值
             full_feat = self.full_encoder(full_oh)           # (B,32,H,W)

@@ -99,6 +99,10 @@ class VideoRecorderWrapper(gym.Wrapper):
     
     def step(self, action, probs=None):
         action = _to_scalar_action(self, action)
+        if self.recording:
+            frame = self.env.render(mode='rgb_array', probs=probs, action=action)
+            self.recorder.record_frame(frame)
+            self.recorded_frames += 1
         obs, reward, done, is_win, info = self.env.step(action)
         
         if self.recording:
@@ -108,6 +112,7 @@ class VideoRecorderWrapper(gym.Wrapper):
             if done:
                 frame = self.env.render(mode='rgb_array', probs=probs, action=action)
                 if frame is not None:
+                    self.recorder.record_frame(frame)
                     self.recorder.record_last_frame(frame)
                 else:
                     print("Warning: Frame is None, skipping last frame recording.")
