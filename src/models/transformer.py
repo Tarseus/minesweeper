@@ -177,7 +177,7 @@ class TransformerBasedModel(nn.Module):
         
         # Get embeddings
         tile_ids = x.reshape(B, N)
-        tile_emb = self.tile_embed(tile_ids)
+        tile_emb = self.tile_embed(tile_ids.int())
         row_emb = self.row_embed(row_indices)
         col_emb = self.col_embed(col_indices)
         feat_emb = self.feat_proj(numerical_features)
