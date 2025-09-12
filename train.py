@@ -7,14 +7,14 @@ import argparse
 
 from src.utils.env_utils import make_env
 from src.wrappers.video_record import VideoRecorderWrapper
-from src.models import CNNBased
+from src.models import CNNBased, TransformerBasedModel
 from src.algo.ppo import PPO
 from src.config import PPOConfig
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train PPO on specified GPU.")
     parser.add_argument(
-        "--gpu", type=int, default=2, help="Specify the GPU to train on (default: 2)."
+        "--gpu", type=int, default=0, help="Specify the GPU to train on (default: 2)."
     )
     parser.add_argument(
         "--difficulty", type=str, default="beginner", help="Game difficulty level (default: beginner)."
@@ -42,7 +42,7 @@ def train(gpu: int, difficulty: str):
     ])
 
     H, W = envs.single_observation_space.shape
-    model = CNNBased(obs_shape=(H, W)).to(device)
+    model = TransformerBasedModel(obs_shape=(H, W)).to(device)
     model = torch.compile(model, mode="max-autotune")
 
     writer = None

@@ -149,8 +149,7 @@ class CNNBased(nn.Module):
         if action_mask is not None:
             if not isinstance(action_mask, torch.Tensor):
                 raise TypeError("action_mask must be a torch.BoolTensor shaped (B,A) after refactor")
-            mask = action_mask
-            logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
+            logits = logits.masked_fill(~action_mask, -float('inf'))
 
         probs  = Categorical(logits=logits)
         if decode_type == "greedy":

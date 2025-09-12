@@ -6,7 +6,7 @@ if src_path not in sys.path:
 from algo.base import MinesweeperSolver
 import numpy as np
 import random
-from config.ppo_config import PPOConfig
+# from config.ppo_config import PPOConfig
 # from utils.env_utils import make_env
 import gymnasium as gym
 
