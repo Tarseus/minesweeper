@@ -27,7 +27,7 @@ class PPOConfig:
     use_full_board: bool = True # use full board as observation, otherwise use only the visible cells
     
     # Algorithm specific arguments
-    num_envs: int = 32
+    num_envs: int = 8
     anneal_lr: bool = True # toggle learning rate annealing
     gae: bool = True # toggle generalized advantage estimation
     gamma: float = 0.99 # discount factor
