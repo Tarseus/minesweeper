@@ -188,7 +188,8 @@ class CE:
                 mb_sglob = (b_sglob[mb_inds] & ~mb_sloc)  # 去重
 
                 # 取当前策略 logits（policy 不看 full_board）
-                mb_logits, _ = self.model.forward(b_obs[mb_inds], full_board=None)
+                mb_out = self.model.forward(b_obs[mb_inds], full_board=None)
+                mb_logits = mb_out[0]
                 # 屏蔽非法动作
                 mb_logits = mb_logits.masked_fill(~mb_amask, torch.finfo(mb_logits.dtype).min)
 
