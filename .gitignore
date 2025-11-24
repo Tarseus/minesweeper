@@ -2,9 +2,7 @@
 __pycache__/
 runs/
 wandb/
-*.log
 .vscode/
-*.log
 *.pth
 *.png
 *.mp4
