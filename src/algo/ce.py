@@ -230,16 +230,25 @@ class CE:
             model_path = os.path.join(self.wandb_run.dir, f"ppo_{cfg.difficulty}_{self.state.global_step}.pth")
             torch.save(self.model.state_dict(), model_path)
             print(f"Model saved to {model_path}")
-        # video eval
-        if (update_idx % cfg.capture_video_freq == 0) and getattr(cfg, "capture_video", False) and self.val_env is not None:
-            self.evaluate_video(prefix=f"val_{self.state.global_step}")
-        out = self.evaluate_n_episodes(
-            total_episodes=cfg.num_envs * 10, prefix=f"test_{self.state.global_step}"
-        )
-        if self.writer is not None:
-            self.writer.add_scalar("eval/win_rate", out["win_rate"], self.state.global_step)
-            self.writer.add_scalar("eval/avg_return", out["returns"].mean(), self.state.global_step)
-            self.writer.add_scalar("eval/avg_length", out["lengths"].mean(), self.state.global_step)
+
+        # optional evaluation hooks (only if CE 实现了这些方法)
+        if hasattr(self, "evaluate_n_episodes"):
+            # video eval（同样需要 evaluate_video 存在才会调用）
+            if (
+                (update_idx % cfg.capture_video_freq == 0)
+                and getattr(cfg, "capture_video", False)
+                and self.val_env is not None
+                and hasattr(self, "evaluate_video")
+            ):
+                self.evaluate_video(prefix=f"val_{self.state.global_step}")
+
+            out = self.evaluate_n_episodes(
+                total_episodes=cfg.num_envs * 10, prefix=f"test_{self.state.global_step}"
+            )
+            if self.writer is not None:
+                self.writer.add_scalar("eval/win_rate", out["win_rate"], self.state.global_step)
+                self.writer.add_scalar("eval/avg_return", out["returns"].mean(), self.state.global_step)
+                self.writer.add_scalar("eval/avg_length", out["lengths"].mean(), self.state.global_step)
 
     # ------------------------ training loop ------------------------
     def train(self):
