@@ -146,10 +146,15 @@ class MinesweeperEnv(gym.Env):
         U0 = self._compute_uncertainty()
         self._last_uncertainty = U0
 
+        # 逻辑安全集合 & 全局安全集合 -> 动作 mask（供 CE 监督使用）
+        safe_local_mask, safe_global_mask = self._logic_safe_masks()
+
         self.info.update({
             "action_mask": self.get_action_mask(),
             "full_board": self._true_board.copy(),
             "seed": self.current_seed,
+            "safe_local_mask": safe_local_mask,
+            "safe_global_mask": safe_global_mask,
         })
 
         return self.board.copy(), self.info
@@ -180,10 +185,14 @@ class MinesweeperEnv(gym.Env):
         if (x, y) in self.mines:
             self.board[x, y] = 9
             self.done = True
+            # 终局状态下的逻辑 / 全局安全集合（主要用于分析，不再产生训练样本）
+            safe_local_mask, safe_global_mask = self._logic_safe_masks()
             self.info.update({
                 "is_game_over": True,
                 "revealed_cells": np.count_nonzero(self.board != 10),
                 "action_mask": self.get_action_mask(),
+                "safe_local_mask": safe_local_mask,
+                "safe_global_mask": safe_global_mask,
             })
             reward = self.rewards_config["lose"]
             if (x, y) in deducible_mines:
@@ -200,10 +209,13 @@ class MinesweeperEnv(gym.Env):
 
         if np.count_nonzero(self.board == 10) == self.num_mines:
             self.done = True
+            safe_local_mask, safe_global_mask = self._logic_safe_masks()
             self.info.update({
                 "is_success": True,
                 "revealed_cells": np.count_nonzero(self.board != 10),
                 "action_mask": self.get_action_mask(),
+                "safe_local_mask": safe_local_mask,
+                "safe_global_mask": safe_global_mask,
             })
             obs = self.board.copy()
             reward = self.rewards_config["win"]
@@ -211,11 +223,14 @@ class MinesweeperEnv(gym.Env):
             return obs, reward, self.done, False, self.info
 
         obs = self.board.copy()
+        safe_local_mask, safe_global_mask = self._logic_safe_masks()
         self.info.update({
             "is_success": False,
             "is_game_over": False,
             "revealed_cells": np.count_nonzero(self.board != 10),
             "action_mask": self.get_action_mask(),
+            "safe_local_mask": safe_local_mask,
+            "safe_global_mask": safe_global_mask,
         })
         revealed_increase = np.count_nonzero(self.board != 10) - last_revealed
         assert revealed_increase > 0, "Revealed cells should increase"
@@ -568,6 +583,34 @@ class MinesweeperEnv(gym.Env):
         safe = {(x,y) for (x,y) in self.solver.safes[env_idx] if self.board[x,y] == 10}
         mines = {(x,y) for (x,y) in self.solver.mines[env_idx] if self.board[x,y] == 10}
         return safe, mines
+
+    def _logic_safe_masks(self):
+        """
+        将逻辑求解器的安全格 + 真正安全格转成一维动作 mask:
+        - safe_local_mask: 逻辑可推断的安全格（teacher：logic solver）
+        - safe_global_mask: 所有真实安全但仍未翻开的格（teacher：ground truth）
+        这两个都会被映射到动作空间 [0, W*H) 上。
+        """
+        A = self.width * self.height
+        local_mask = np.zeros(A, dtype=bool)
+        global_mask = np.zeros(A, dtype=bool)
+
+        # 逻辑可推断的安全格（只考虑当前仍为未知格）
+        safe_local, _ = self._deducible_safe_and_mines()
+        for (x, y) in safe_local:
+            idx = x * self.height + y
+            if 0 <= idx < A:
+                local_mask[idx] = True
+
+        # 全局真实安全格：未翻开 & 不是地雷
+        for x in range(self.width):
+            for y in range(self.height):
+                if self.board[x, y] == 10 and (x, y) not in self.mines:
+                    idx = x * self.height + y
+                    if 0 <= idx < A:
+                        global_mask[idx] = True
+
+        return local_mask, global_mask
     
     def _build_true_board(self):
         b = np.zeros((self.width, self.height), dtype=int)

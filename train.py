@@ -9,20 +9,30 @@ from src.utils.env_utils import make_env
 from src.wrappers.video_record import VideoRecorderWrapper
 from src.models import CNNBased, TransformerBasedModel
 from src.algo.ppo import PPO
+from src.algo.ce import CE
 from src.config import PPOConfig
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train PPO on specified GPU.")
+    parser = argparse.ArgumentParser(description="Train PPO/CE on specified GPU.")
     parser.add_argument(
         "--gpu", type=int, default=0, help="Specify the GPU to train on (default: 2)."
     )
     parser.add_argument(
         "--difficulty", type=str, default="beginner", help="Game difficulty level (default: beginner)."
     )
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default="ppo",
+        choices=["ppo", "ce"],
+        help="Training algorithm: ppo (RL) or ce (cross-entropy).",
+    )
     return parser.parse_args()
 
-def train(gpu: int, difficulty: str):
+def train(gpu: int, difficulty: str, algo: str = "ppo"):
     config = PPOConfig(difficulty=difficulty)
+    if algo.lower() == "ce":
+        config.exp_name = "ms_ai_ce_" + config.difficulty
     run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
     seed = config.seed + config.total_timesteps
 
@@ -77,7 +87,15 @@ def train(gpu: int, difficulty: str):
             if_save_frames=True,
         )
 
-    agent = PPO(
+    algo_lower = algo.lower()
+    if algo_lower == "ppo":
+        AgentCls = PPO
+    elif algo_lower == "ce":
+        AgentCls = CE
+    else:
+        raise ValueError(f"Unknown algo: {algo}")
+
+    agent = AgentCls(
         envs=envs,
         model=model,
         config=config,
@@ -117,4 +135,4 @@ def train(gpu: int, difficulty: str):
 
 if __name__ == "__main__":
     args = parse_args()
-    train(args.gpu, args.difficulty)
+    train(args.gpu, args.difficulty, args.algo)
