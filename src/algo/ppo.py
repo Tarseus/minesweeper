@@ -61,19 +61,35 @@ class PPO:
         
         self.phase = config.phase  # "train" or "test"
 
-        # rollout buffers
-        shape_obs = envs.single_observation_space.shape
-        H, W = shape_obs
-        self.obs      = torch.zeros((config.num_steps, config.num_envs) + shape_obs, device=device)
-        self.actions  = torch.zeros((config.num_steps, config.num_envs) + envs.single_action_space.shape, device=device)
-        self.logprobs = torch.zeros((config.num_steps, config.num_envs), device=device)
-        self.values   = torch.zeros((config.num_steps, config.num_envs), device=device)
-        self.rewards  = torch.zeros((config.num_steps, config.num_envs), device=device)
-        self.dones    = torch.zeros((config.num_steps, config.num_envs), device=device)
-        # self.full_boards = torch.torch.empty((config.num_steps, config.num_envs, H, W),
-        #                        dtype=torch.int, device=device)
+        self._init_rollout_buffers()
 
         self.state = TrainState(global_step=0, win_rate=0.0)
+
+    def _init_rollout_buffers(self):
+        cfg = self.config
+        device = self.device
+        envs = self.envs
+
+        shape_obs = envs.single_observation_space.shape
+        self.obs = torch.zeros((cfg.num_steps, cfg.num_envs) + shape_obs, device=device)
+        self.actions = torch.zeros((cfg.num_steps, cfg.num_envs) + envs.single_action_space.shape, device=device)
+        self.logprobs = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
+        self.values = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
+        self.rewards = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
+        self.dones = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
+
+    def set_envs(self, envs, config=None):
+        """
+        Swap to a new vector env (e.g. different difficulty -> different HxW / action space),
+        and reinitialize rollout buffers accordingly, while keeping model/optimizer state.
+        """
+        self.envs = envs
+        if config is not None:
+            self.config = config
+            self.phase = config.phase
+            if len(self.optimizer.param_groups) > 0:
+                self.optimizer.param_groups[0]["lr"] = config.learning_rate
+        self._init_rollout_buffers()
 
     # ------------------------ core methods ------------------------
     def rollout(self) -> Tuple[torch.Tensor, Dict[str, Any]]:

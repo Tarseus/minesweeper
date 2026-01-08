@@ -7,7 +7,7 @@ import argparse
 
 from src.utils.env_utils import make_env
 from src.wrappers.video_record import VideoRecorderWrapper
-from src.models import CNNBased, TransformerBasedModel
+from src.models import CNNBased, TransformerBasedModel, GridGNNBased
 from src.algo.ppo import PPO
 from src.algo.ce import CE
 from src.config import PPOConfig
@@ -18,7 +18,11 @@ def parse_args():
         "--gpu", type=int, default=0, help="Specify the GPU to train on (default: 2)."
     )
     parser.add_argument(
-        "--difficulty", type=str, default="beginner", help="Game difficulty level (default: beginner)."
+        "--difficulty",
+        type=str,
+        default="beginner",
+        choices=["beginner", "intermediate", "expert", "curriculum"],
+        help="Game difficulty level, or curriculum (beginner->intermediate->expert).",
     )
     parser.add_argument(
         "--algo",
@@ -27,14 +31,38 @@ def parse_args():
         choices=["ppo", "ce"],
         help="Training algorithm: ppo (RL) or ce (cross-entropy).",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="transformer",
+        choices=["transformer", "cnn", "gnn"],
+        help="Backbone model: transformer/cnn/gnn.",
+    )
     return parser.parse_args()
 
-def train(gpu: int, difficulty: str, algo: str = "ppo"):
-    config = PPOConfig(difficulty=difficulty)
-    if algo.lower() == "ce":
-        config.exp_name = "ms_ai_ce_" + config.difficulty
-    run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
-    seed = config.seed + config.total_timesteps
+def train(gpu: int, difficulty: str, algo: str = "ppo", model_name: str = "transformer"):
+    algo_lower = algo.lower()
+    model_name = (model_name or "transformer").lower()
+
+    if difficulty == "curriculum" and algo_lower != "ppo":
+        raise ValueError("difficulty=curriculum currently supports --algo ppo only.")
+    if difficulty == "curriculum" and model_name == "transformer":
+        raise ValueError("difficulty=curriculum requires --model gnn or --model cnn (transformer is shape-fixed).")
+
+    stage_configs = None
+    if difficulty == "curriculum":
+        stage_difficulties = ["beginner", "intermediate", "expert"]
+        stage_configs = [PPOConfig(difficulty=d) for d in stage_difficulties]
+        config = stage_configs[0]
+        config.exp_name = "ms_ai_ppo_curriculum"
+        run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
+        seed = config.seed + sum(c.total_timesteps for c in stage_configs)
+    else:
+        config = PPOConfig(difficulty=difficulty)
+        if algo_lower == "ce":
+            config.exp_name = "ms_ai_ce_" + config.difficulty
+        run_name = f"{config.exp_name}_{config.seed}_{time.strftime('%d/%m/%Y_%H-%M-%S')}"
+        seed = config.seed + config.total_timesteps
 
     random.seed(seed)
     np.random.seed(seed)
@@ -47,13 +75,26 @@ def train(gpu: int, difficulty: str, algo: str = "ppo"):
     if run_name is None:
         run_name = f"{config.exp_name}_{seed}_{time.strftime('%d-%m-%Y_%H-%M-%S')}"
 
-    envs = gym.vector.SyncVectorEnv([ 
-        make_env(config, seed + i, i, False, run_name) for i in range(config.num_envs)
-    ])
+    def build_envs(cfg, base_seed: int):
+        return gym.vector.SyncVectorEnv(
+            [make_env(cfg, base_seed + i, i, False, run_name) for i in range(cfg.num_envs)]
+        )
+
+    envs = build_envs(config, seed)
 
     H, W = envs.single_observation_space.shape
-    model = TransformerBasedModel(obs_shape=(H, W)).to(device)
-    model = torch.compile(model, mode="max-autotune")
+    if model_name == "transformer":
+        model = TransformerBasedModel(obs_shape=(H, W)).to(device)
+        model = torch.compile(model, mode="max-autotune")
+    elif model_name == "cnn":
+        model = CNNBased(obs_shape=(H, W)).to(device)
+        model = torch.compile(model, mode="max-autotune")
+    elif model_name == "gnn":
+        gnn_obs_shape = None if difficulty == "curriculum" else (H, W)
+        model = GridGNNBased(obs_shape=gnn_obs_shape).to(device)
+        model = torch.compile(model, mode="max-autotune")
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
 
     writer = None
     wandb_run = None
@@ -87,7 +128,6 @@ def train(gpu: int, difficulty: str, algo: str = "ppo"):
             if_save_frames=True,
         )
 
-    algo_lower = algo.lower()
     if algo_lower == "ppo":
         AgentCls = PPO
     elif algo_lower == "ce":
@@ -112,13 +152,28 @@ def train(gpu: int, difficulty: str, algo: str = "ppo"):
         print(f"Loading pre-trained model from {config.pretrain_model_path}")
         agent.load(pre_path)
 
-    agent.train()
+    if difficulty != "curriculum":
+        agent.train()
+    else:
+        for stage_idx, stage_cfg in enumerate(stage_configs):
+            if stage_idx > 0:
+                old_envs = envs
+                envs = build_envs(stage_cfg, seed + 100_000 * stage_idx)
+                old_envs.close()
+                agent.set_envs(envs, stage_cfg)
+            print(
+                f"[curriculum] stage={stage_cfg.difficulty} "
+                f"size={stage_cfg.width}x{stage_cfg.height} mines={stage_cfg.num_mines}"
+            )
+            agent.train()
 
     if wandb_run is not None:
-        final_path = os.path.join(wandb_run.dir, f"ppo_{config.difficulty}_{agent.state.global_step}.pth")
+        tag = "curriculum" if difficulty == "curriculum" else config.difficulty
+        final_path = os.path.join(wandb_run.dir, f"ppo_{tag}_{agent.state.global_step}.pth")
     else:
         os.makedirs("checkpoints", exist_ok=True)
-        final_path = os.path.join("checkpoints", f"ppo_{config.difficulty}_{agent.state.global_step}.pth")
+        tag = "curriculum" if difficulty == "curriculum" else config.difficulty
+        final_path = os.path.join("checkpoints", f"ppo_{tag}_{agent.state.global_step}.pth")
     agent.save(final_path)
 
     envs.close()
@@ -136,4 +191,4 @@ def train(gpu: int, difficulty: str, algo: str = "ppo"):
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
     args = parse_args()
-    train(args.gpu, args.difficulty, args.algo)
+    train(args.gpu, args.difficulty, args.algo, args.model)
